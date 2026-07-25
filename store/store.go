@@ -1,0 +1,441 @@
+// Package store は取得した棋譜を SQLite に永続化する。
+//
+// Wails には依存しない。ドライバは PureGo の modernc.org/sqlite を使うので
+// cgo 不要で、クロスコンパイルもそのまま通る。
+//
+// 棋譜を溜め込んでいく前提の構成にしてある。詳細は schema.go を参照。
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	_ "modernc.org/sqlite"
+)
+
+// ErrNotFound は該当する棋譜が無いことを表す。
+var ErrNotFound = errors.New("kicho: game not found")
+
+// 棋譜の取得元。
+const (
+	// SourceYomiuri は読売サイトからのスクレイピング。SourceID は読売の棋譜 ID で、
+	// 取り直しても同じ棋譜として更新される。
+	SourceYomiuri = "yomiuri"
+	// SourceURL は任意の URL から KIF を取得したもの。
+	SourceURL = "url"
+	// SourcePaste は KIF テキストを直接貼り付けたもの。
+	SourcePaste = "paste"
+)
+
+// Game は保存する棋譜1局分。KIF テキストは組み立て済みのものを受け取る。
+type Game struct {
+	Source   string // 取得元(SourceYomiuri / SourceURL / SourcePaste)
+	SourceID string // 取得元での ID
+	// SourceURL は取得元の URL(URL 取り込みのみ。出所を残すため)。
+	SourceURL string
+	Event     string    // 棋戦名
+	Handicap  string    // 手合割
+	Place     string    // 対局場所
+	Black     string    // 先手
+	White     string    // 後手
+	StartedAt time.Time // 開始日時(ゼロ値可)
+	// EndMark は終局の種別(例 "投了")。対局中に保存した場合は空になる。
+	EndMark string
+	// Moves は手数。棋譜の書式を知っているのは呼び出し側なので、
+	// ここでは本文から数えずに受け取る(一覧表示で本文を読まずに済ませるため)。
+	Moves int
+
+	// Body は**登録された形式の原本**。整形し直さずそのまま持つ
+	// (整形すると変化・コメント・不成などの情報が落ちるため)。
+	Body string
+	// Format は Body の形式(kicho/format の Format。空なら kif 扱い)。
+	Format string
+	// Encoding は元の文字コード(Body 自体は UTF-8 に寄せてある)。主にデバッグ用。
+	Encoding string
+}
+
+// Finished は終局済みの棋譜かどうかを返す。
+func (g Game) Finished() bool { return g.EndMark != "" }
+
+// Record は保存済みの棋譜(Game に kicho 自前の ID と保存時刻を付けたもの)。
+type Record struct {
+	Game
+	ID        string // kicho 自前の ID。HTTP の /kifu/:id で使う
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// Store は棋譜データベース。
+type Store struct {
+	db *sql.DB
+}
+
+// Open は指定パスの DB を開く(無ければ作る)。親ディレクトリも作成する。
+func Open(path string) (*Store, error) {
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("create data dir: %w", err)
+		}
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite %s: %w", path, err)
+	}
+	// modernc の SQLite は単一接続に絞ると database is locked を避けやすい。
+	// 接続が1本なので PRAGMA も1回で足りる。
+	db.SetMaxOpenConns(1)
+
+	// game_kifu の ON DELETE CASCADE を効かせる(既定は OFF)。
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("enable foreign keys: %w", err)
+	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &Store{db: db}, nil
+}
+
+// Close は DB を閉じる。
+func (s *Store) Close() error { return s.db.Close() }
+
+// 時刻は UTC epoch 秒で持つ(ゼロ値は 0)。
+func toEpoch(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UTC().Unix()
+}
+
+func fromEpoch(sec int64) time.Time {
+	if sec == 0 {
+		return time.Time{}
+	}
+	return time.Unix(sec, 0).UTC()
+}
+
+// Save は棋譜を保存する。同じ (Source, SourceID) が既にあれば内容を更新し、
+// 既存の ID と CreatedAt はそのまま維持する。
+func (s *Store) Save(ctx context.Context, g Game) (Record, error) {
+	if g.Source == "" || g.SourceID == "" {
+		return Record{}, fmt.Errorf("kicho: Source and SourceID are required")
+	}
+	if g.Body == "" {
+		return Record{}, fmt.Errorf("kicho: 棋譜本文が空です")
+	}
+	if g.Format == "" {
+		g.Format = defaultFormat
+	}
+	if g.Encoding == "" {
+		g.Encoding = defaultEncoding
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Record{}, fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 既存を探す(あれば ID と CreatedAt を引き継ぐ)。
+	var id string
+	var createdAt int64
+	err = tx.QueryRowContext(ctx,
+		`SELECT id, created_at FROM games WHERE source = ? AND source_id = ?`,
+		g.Source, g.SourceID).Scan(&id, &createdAt)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		id = uuid.NewString()
+		createdAt = toEpoch(now)
+	case err != nil:
+		return Record{}, fmt.Errorf("lookup existing: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+        INSERT INTO games (id, source, source_id, source_url, event, handicap, place,
+                           black, white, started_at, end_mark, moves,
+                           created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(source, source_id) DO UPDATE SET
+            source_url = excluded.source_url,
+            event = excluded.event,
+            handicap = excluded.handicap,
+            place = excluded.place,
+            black = excluded.black,
+            white = excluded.white,
+            started_at = excluded.started_at,
+            end_mark = excluded.end_mark,
+            moves = excluded.moves,
+            updated_at = excluded.updated_at`,
+		id, g.Source, g.SourceID, g.SourceURL, g.Event, g.Handicap, g.Place,
+		g.Black, g.White, toEpoch(g.StartedAt), g.EndMark, g.Moves,
+		createdAt, toEpoch(now))
+	if err != nil {
+		return Record{}, fmt.Errorf("save game: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+        INSERT INTO game_kifu (game_id, format, encoding, body) VALUES (?, ?, ?, ?)
+        ON CONFLICT(game_id) DO UPDATE SET
+            format = excluded.format,
+            encoding = excluded.encoding,
+            body = excluded.body`, id, g.Format, g.Encoding, g.Body)
+	if err != nil {
+		return Record{}, fmt.Errorf("save kifu: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Record{}, fmt.Errorf("commit: %w", err)
+	}
+
+	return Record{
+		Game:      g,
+		ID:        id,
+		CreatedAt: fromEpoch(createdAt),
+		UpdatedAt: now,
+	}, nil
+}
+
+// metaColumns は KIF 本文を含まないメタデータの列。
+const metaColumns = `g.id, g.source, g.source_id, g.source_url, g.event, g.handicap, g.place,
+                     g.black, g.white, g.started_at, g.end_mark, g.moves,
+                     g.created_at, g.updated_at`
+
+// withKifu はメタデータに棋譜本文(と形式・文字コード)を足した SELECT 句。
+const withKifu = metaColumns + `, COALESCE(k.body, ''),
+                     COALESCE(NULLIF(k.format, ''), '` + defaultFormat + `'),
+                     COALESCE(NULLIF(k.encoding, ''), '` + defaultEncoding + `')`
+
+const joinKifu = ` LEFT JOIN game_kifu k ON k.game_id = g.id`
+
+// 形式・文字コードが記録されていない場合の既定。
+const (
+	defaultFormat   = "kif"
+	defaultEncoding = "utf-8"
+)
+
+type scanner interface{ Scan(...any) error }
+
+func scanMeta(sc scanner) (Record, error) {
+	var r Record
+	var startedAt, createdAt, updatedAt int64
+	err := sc.Scan(&r.ID, &r.Source, &r.SourceID, &r.SourceURL, &r.Event, &r.Handicap, &r.Place,
+		&r.Black, &r.White, &startedAt, &r.EndMark, &r.Moves,
+		&createdAt, &updatedAt)
+	if err != nil {
+		return Record{}, err
+	}
+	r.StartedAt = fromEpoch(startedAt)
+	r.CreatedAt = fromEpoch(createdAt)
+	r.UpdatedAt = fromEpoch(updatedAt)
+	return r, nil
+}
+
+func scanFull(sc scanner) (Record, error) {
+	var r Record
+	var startedAt, createdAt, updatedAt int64
+	err := sc.Scan(&r.ID, &r.Source, &r.SourceID, &r.SourceURL, &r.Event, &r.Handicap, &r.Place,
+		&r.Black, &r.White, &startedAt, &r.EndMark, &r.Moves,
+		&createdAt, &updatedAt, &r.Body, &r.Format, &r.Encoding)
+	if err != nil {
+		return Record{}, err
+	}
+	r.StartedAt = fromEpoch(startedAt)
+	r.CreatedAt = fromEpoch(createdAt)
+	r.UpdatedAt = fromEpoch(updatedAt)
+	return r, nil
+}
+
+// Get は kicho 自前の ID で棋譜を取り出す(KIF 本文つき)。無ければ ErrNotFound。
+func (s *Store) Get(ctx context.Context, id string) (Record, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+withKifu+` FROM games g`+joinKifu+` WHERE g.id = ?`, id)
+	r, err := scanFull(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Record{}, ErrNotFound
+	}
+	if err != nil {
+		return Record{}, fmt.Errorf("get game: %w", err)
+	}
+	return r, nil
+}
+
+// FindBySource は取得元と取得元 ID で棋譜を探す。無ければ ErrNotFound。
+func (s *Store) FindBySource(ctx context.Context, source, sourceID string) (Record, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+withKifu+` FROM games g`+joinKifu+
+			` WHERE g.source = ? AND g.source_id = ?`, source, sourceID)
+	r, err := scanFull(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Record{}, ErrNotFound
+	}
+	if err != nil {
+		return Record{}, fmt.Errorf("find game: %w", err)
+	}
+	return r, nil
+}
+
+const orderNewestFirst = ` ORDER BY g.started_at DESC, g.created_at DESC`
+
+// List は保存済みの棋譜を新しい順に返す(KIF 本文つき)。
+// 一覧表示だけなら ListSummary / Search を使う。
+func (s *Store) List(ctx context.Context) ([]Record, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+withKifu+` FROM games g`+joinKifu+orderNewestFirst)
+	if err != nil {
+		return nil, fmt.Errorf("list games: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Record
+	for rows.Next() {
+		r, err := scanFull(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan game: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ListSummary は棋譜本文を除いた一覧を新しい順に返す(一覧表示用)。
+func (s *Store) ListSummary(ctx context.Context) ([]Record, error) {
+	return s.Search(ctx, Query{})
+}
+
+// Delete は棋譜を削除する。無ければ ErrNotFound。
+func (s *Store) Delete(ctx context.Context, id string) error {
+	// game_kifu は ON DELETE CASCADE で消える(Open で foreign_keys を ON にしている)。
+	res, err := s.db.ExecContext(ctx, `DELETE FROM games WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete game: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete game: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// Count は保存件数を返す。
+func (s *Store) Count(ctx context.Context) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM games`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count games: %w", err)
+	}
+	return n, nil
+}
+
+// MinTrigramLen は FTS5 の trigram トークナイザが扱える最小文字数。
+// これ未満のクエリはインデックスを使えないので LIKE にフォールバックする。
+const MinTrigramLen = 3
+
+// Query は検索条件。ゼロ値は「条件なし」を意味する。
+type Query struct {
+	// Text は棋戦名・対局者・場所への部分一致。
+	// 3文字以上なら FTS5(trigram)、それ未満は LIKE で走査する。
+	Text string
+	// From / To は開始日時の範囲(ゼロ値は無制限)。To はその時刻を含む。
+	From time.Time
+	To   time.Time
+	// FinishedOnly が true なら終局済みのみ。
+	FinishedOnly bool
+	// Limit は取得件数の上限(0 なら無制限)、Offset は読み飛ばす件数。
+	Limit  int
+	Offset int
+}
+
+// escapeFTS は FTS5 のフレーズクエリ用に文字列をくるむ。
+// trigram では演算子を使わせず、入力全体を1つのフレーズとして扱う。
+func escapeFTS(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+}
+
+// escapeLike は LIKE のワイルドカードを無効化する(ESCAPE '\' と併用)。
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
+}
+
+// Search は条件に合う棋譜をメタデータのみ(KIF 本文なし)で新しい順に返す。
+func (s *Store) Search(ctx context.Context, q Query) ([]Record, error) {
+	var (
+		sb    strings.Builder
+		args  []any
+		where []string
+	)
+
+	sb.WriteString(`SELECT ` + metaColumns + ` FROM games g`)
+
+	text := strings.TrimSpace(q.Text)
+	if text != "" {
+		if len([]rune(text)) >= MinTrigramLen {
+			// FTS を先に絞ってから join する。
+			sb.WriteString(` JOIN games_fts f ON f.rowid = g.rowid`)
+			where = append(where, `games_fts MATCH ?`)
+			args = append(args, escapeFTS(text))
+		} else {
+			// trigram は3文字未満を索引化できないため走査するしかない。
+			like := "%" + escapeLike(text) + "%"
+			where = append(where,
+				`(g.event LIKE ? ESCAPE '\' OR g.black LIKE ? ESCAPE '\'
+				  OR g.white LIKE ? ESCAPE '\' OR g.place LIKE ? ESCAPE '\')`)
+			args = append(args, like, like, like, like)
+		}
+	}
+
+	if !q.From.IsZero() {
+		where = append(where, `g.started_at >= ?`)
+		args = append(args, toEpoch(q.From))
+	}
+	if !q.To.IsZero() {
+		where = append(where, `g.started_at <= ?`)
+		args = append(args, toEpoch(q.To))
+	}
+	if q.FinishedOnly {
+		where = append(where, `g.end_mark <> ''`)
+	}
+
+	if len(where) > 0 {
+		sb.WriteString(` WHERE `)
+		sb.WriteString(strings.Join(where, ` AND `))
+	}
+	sb.WriteString(orderNewestFirst)
+
+	if q.Limit > 0 {
+		sb.WriteString(` LIMIT ?`)
+		args = append(args, q.Limit)
+		if q.Offset > 0 {
+			sb.WriteString(` OFFSET ?`)
+			args = append(args, q.Offset)
+		}
+	}
+
+	rows, err := s.db.QueryContext(ctx, sb.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("search games: %w", err)
+	}
+	defer rows.Close()
+
+	out := []Record{}
+	for rows.Next() {
+		r, err := scanMeta(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan game: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

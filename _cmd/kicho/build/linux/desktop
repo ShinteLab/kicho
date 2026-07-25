@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=kicho
+Comment=kicho - 棋帳
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/kicho.exe %u
+Terminal=false
+Type=Application
+Icon=kicho.exe
+Categories=Utility;
+StartupWMClass=kicho.exe
+
+ 
