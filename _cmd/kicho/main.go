@@ -8,8 +8,8 @@ import (
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 
-	"shinte/kicho"
-	"shinte/kicho/settings"
+	"github.com/ShinteLab/kicho"
+	"github.com/ShinteLab/kicho/settings"
 )
 
 // frontend/dist をバイナリに埋め込む。

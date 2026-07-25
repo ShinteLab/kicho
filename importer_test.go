@@ -13,9 +13,9 @@ import (
 	"golang.org/x/text/encoding/japanese"
 	"golang.org/x/text/transform"
 
-	"shinte/core/kifu"
-	"shinte/kicho/httpapi"
-	"shinte/kicho/store"
+	"github.com/ShinteLab/core/kifu"
+	"github.com/ShinteLab/kicho/httpapi"
+	"github.com/ShinteLab/kicho/store"
 )
 
 const importSample = `開始日時：2024/10/19 09:00:00

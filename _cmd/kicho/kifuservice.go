@@ -6,11 +6,11 @@ import (
 	"strings"
 	"time"
 
-	"shinte/core/kifu"
-	"shinte/kicho"
-	"shinte/kicho/format"
-	"shinte/kicho/scrape"
-	"shinte/kicho/store"
+	"github.com/ShinteLab/core/kifu"
+	"github.com/ShinteLab/kicho"
+	"github.com/ShinteLab/kicho/format"
+	"github.com/ShinteLab/kicho/scrape"
+	"github.com/ShinteLab/kicho/store"
 )
 
 // KifuService は棋譜の取得・保存・削除をフロントに公開する。

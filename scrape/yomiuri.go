@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/net/html"
 
-	"shinte/core/kifu"
+	"github.com/ShinteLab/core/kifu"
 )
 
 // Yomiuri は読売(竜王戦)の棋譜ページを扱う。

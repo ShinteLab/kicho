@@ -17,9 +17,9 @@ import (
 	"sync"
 	"time"
 
-	"shinte/kicho/format"
-	"shinte/kicho/scrape"
-	"shinte/kicho/store"
+	"github.com/ShinteLab/kicho/format"
+	"github.com/ShinteLab/kicho/scrape"
+	"github.com/ShinteLab/kicho/store"
 )
 
 // LoopbackHost は既定の bind アドレス(この端末からのみアクセス可能)。

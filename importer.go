@@ -14,9 +14,9 @@ import (
 	"golang.org/x/text/encoding/japanese"
 	"golang.org/x/text/transform"
 
-	"shinte/core/kifu"
-	"shinte/kicho/format"
-	"shinte/kicho/store"
+	"github.com/ShinteLab/core/kifu"
+	"github.com/ShinteLab/kicho/format"
+	"github.com/ShinteLab/kicho/store"
 )
 
 // maxKifuBytes は取り込む KIF の上限。棋譜1局は大きくても数十 KB なので、

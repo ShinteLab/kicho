@@ -11,20 +11,23 @@ kicho（棋帳）。棋譜を取得して保存し、外部ツールへ HTTP で
 
 ## 構成
 
-Wails 依存を `_cmd/kicho/` に閉じ込め、ロジックは親モジュール `shinte` 側の
+Wails 依存を `_cmd/kicho/` に閉じ込め、ロジックは親モジュール `github.com/ShinteLab/kicho` 側の
 通常パッケージに置く（wails3 skill のアーキテクチャ方針）。
+
+`core` はタグ未発行のため `replace github.com/ShinteLab/core => ../core` の相対パス参照で引いている。
+Wails アプリ側（`_cmd/kicho/`, module `kicho-app`）は `core` と `kicho` の両方を replace で参照する。
 
 | パッケージ | import パス | 役割 |
 |---|---|---|
-| `kicho`（root） | `shinte/kicho` | ユースケース。取得→保存を束ねる `Library` |
-| `scrape/` | `shinte/kicho/scrape` | 読売サイトからの取得。ペイロード評価・HTML 解析 |
-| `store/` | `shinte/kicho/store` | SQLite への永続化 |
-| `httpapi/` | `shinte/kicho/httpapi` | 棋譜配信 HTTP サーバ（起動/停止・bind 設定） |
-| `settings/` | `shinte/kicho/settings` | 設定の永続化と保存先パスの解決 |
+| `kicho`（root） | `github.com/ShinteLab/kicho` | ユースケース。取得→保存を束ねる `Library` |
+| `scrape/` | `github.com/ShinteLab/kicho/scrape` | 読売サイトからの取得。ペイロード評価・HTML 解析 |
+| `store/` | `github.com/ShinteLab/kicho/store` | SQLite への永続化 |
+| `httpapi/` | `github.com/ShinteLab/kicho/httpapi` | 棋譜配信 HTTP サーバ（起動/停止・bind 設定） |
+| `settings/` | `github.com/ShinteLab/kicho/settings` | 設定の永続化と保存先パスの解決 |
 | `_cmd/kicho/` | — | **Wails3 アプリ**（独立したネストモジュール `kicho-app`） |
 
 ```
-_cmd/kicho/services  →  shinte/kicho  →  scrape / store / httpapi / settings
+_cmd/kicho/services  →  github.com/ShinteLab/kicho  →  scrape / store / httpapi / settings
      ↑
   Wails 依存はここだけ（main.go, kifuservice.go, serverservice.go）
 ```
@@ -34,8 +37,8 @@ _cmd/kicho/services  →  shinte/kicho  →  scrape / store / httpapi / settings
 ## コマンド
 
 ```powershell
-# ロジック側（リポジトリルートから。_cmd 配下は go build ./... の対象外）
-go test ./kicho/...
+# ロジック側（kicho/ から。_cmd 配下は go build ./... の対象外）
+go test ./...
 
 # Wails アプリ（_cmd/kicho で実行）
 cd kicho/_cmd/kicho
@@ -179,7 +182,7 @@ FTS のクエリは `escapeFTS` でフレーズとしてくくる（`OR` や `NE
 | **KIF → KI2** | **高** | **合法手生成が必要**。KI2 は移動元を書かず `右/左/上/引/寄/直` で区別するため、「その升に動ける同じ駒が他にあるか」を知る必要がある |
 | → USEN | 不明 | ShogiHome 独自形式。仕様確認から |
 
-合法手生成は `shinte/engine` にある。ただし**ルート CLAUDE.md の依存規約は
+合法手生成は `github.com/ShinteLab/engine` にある。ただし**ルート CLAUDE.md の依存規約は
 `engine → core` の一方向**なので、`core/kifu` から engine は参照できない。
 `kicho → engine` は循環しないため、engine が要る変換は `kicho/format` 側に置くこと
 （機械的な変換は `core/kifu` に置いてよい）。

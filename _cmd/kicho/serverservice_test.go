@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"shinte/kicho/httpapi"
+	"github.com/ShinteLab/kicho/httpapi"
 )
 
 func TestAccessURLsLoopback(t *testing.T) {

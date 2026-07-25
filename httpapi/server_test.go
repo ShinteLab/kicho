@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"shinte/core/kifu"
-	"shinte/kicho/scrape"
-	"shinte/kicho/store"
+	"github.com/ShinteLab/core/kifu"
+	"github.com/ShinteLab/kicho/scrape"
+	"github.com/ShinteLab/kicho/store"
 )
 
 type fakeFetcher struct {

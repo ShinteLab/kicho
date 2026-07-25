@@ -9,11 +9,11 @@ import (
 	"fmt"
 	"log/slog"
 
-	"shinte/kicho/format"
-	"shinte/kicho/httpapi"
-	"shinte/kicho/scrape"
-	"shinte/kicho/settings"
-	"shinte/kicho/store"
+	"github.com/ShinteLab/kicho/format"
+	"github.com/ShinteLab/kicho/httpapi"
+	"github.com/ShinteLab/kicho/scrape"
+	"github.com/ShinteLab/kicho/settings"
+	"github.com/ShinteLab/kicho/store"
 )
 
 // Library は棋譜の取得・保存・配信をまとめたもの。

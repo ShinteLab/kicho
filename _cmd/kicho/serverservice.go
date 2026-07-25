@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"shinte/kicho"
-	"shinte/kicho/httpapi"
-	"shinte/kicho/settings"
+	"github.com/ShinteLab/kicho"
+	"github.com/ShinteLab/kicho/httpapi"
+	"github.com/ShinteLab/kicho/settings"
 )
 
 // ServerService は棋譜配信 HTTP サーバの設定と起動/停止をフロントに公開する。

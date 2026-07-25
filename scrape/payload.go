@@ -7,7 +7,7 @@ import (
 
 	"github.com/dop251/goja"
 
-	"shinte/core/kifu"
+	"github.com/ShinteLab/core/kifu"
 )
 
 // 読売のペイロードは Nuxt の `export default (function(a,b,...){...}(...))` 形式で、

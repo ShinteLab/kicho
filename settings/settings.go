@@ -13,7 +13,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"shinte/kicho/httpapi"
+	"github.com/ShinteLab/kicho/httpapi"
 )
 
 // AppName は設定・データを置くディレクトリ名。
