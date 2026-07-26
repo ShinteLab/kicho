@@ -7,6 +7,25 @@ import "./app.css";
 type Tab = "fetch" | "import" | "library" | "server";
 
 /**
+ * 取得タブのカード1枚。取得するたびに増える。
+ *
+ * 複数対局を並行して追える（第1局を取ったまま第2局を取れる）ようにするため、
+ * 取得結果は1件だけ持つのではなくカードの配列として持つ。
+ */
+type FetchCard = {
+  /**
+   * カードの識別子。取得元の棋譜 ID をそのまま使う。
+   * 対局中の棋譜を取り直したときにカードが増えず、同じカードが最新化される。
+   */
+  key: string;
+  game: GameDetail;
+  /** このカードを保存したもの。保存後に棋譜 URL をコピーできるよう残す。 */
+  saved: GameSummary | null;
+  notice: string;
+  error: string;
+};
+
+/**
  * 取得タブの状態。タブを切り替えると中身がアンマウントされるため、
  * 入力した URL と取得結果が消えないよう App 側で保持する。
  *
@@ -14,19 +33,16 @@ type Tab = "fetch" | "import" | "library" | "server";
  */
 type FetchState = {
   input: string;
-  preview: GameDetail | null;
-  /** 直前に保存したもの。保存後に棋譜 URL をコピーできるよう残す。 */
-  saved: GameSummary | null;
+  /** 新しく取得したものが先頭。 */
+  cards: FetchCard[];
+  /** 取得そのものの失敗（カードにならないのでここに出す）。 */
   error: string;
-  notice: string;
 };
 
 const emptyFetchState: FetchState = {
   input: "",
-  preview: null,
-  saved: null,
+  cards: [],
   error: "",
-  notice: "",
 };
 
 /** 登録タブの入力方法。 */
@@ -180,7 +196,13 @@ export default function App() {
   );
 }
 
-/** 取得タブ: URL または棋譜 ID から取得してプレビュー → 保存。 */
+/**
+ * 取得タブ: URL または棋譜 ID から取得してカードを並べ、カードごとに保存する。
+ *
+ * 複数の対局を同時に追えるよう、取得するたびにカードを追加する。
+ * すでに取得済みの棋譜をもう一度取ったときは、カードを増やさずその場で最新化する
+ * （対局中は同じ棋譜を繰り返し取り直すため）。
+ */
 function FetchTab({
   state,
   setState,
@@ -192,15 +214,34 @@ function FetchTab({
 }) {
   // 通信中フラグは一時的なものなのでタブ内に持つ。
   const [busy, setBusy] = useState(false);
+  // 保存中のカード。保存はカード単位なのでどれを処理中か持つ。
+  const [savingKey, setSavingKey] = useState("");
 
-  const { input, preview, saved, error, notice } = state;
+  const { input, cards, error } = state;
   const patch = (p: Partial<FetchState>) => setState((s) => ({ ...s, ...p }));
+  const patchCard = (key: string, p: Partial<FetchCard>) =>
+    setState((s) => ({
+      ...s,
+      cards: s.cards.map((c) => (c.key === key ? { ...c, ...p } : c)),
+    }));
 
-  const run = async (fn: () => Promise<void>) => {
+  const handleFetch = async () => {
     setBusy(true);
-    patch({ error: "", notice: "" });
+    patch({ error: "" });
     try {
-      await fn();
+      const d = await KifuService.Fetch(input);
+      const key = d.sourceId || d.sourceUrl || input.trim();
+      setState((s) => {
+        const i = s.cards.findIndex((c) => c.key === key);
+        // 取り直しなら、位置と保存済みの情報を保ったまま中身だけ差し替える。
+        if (i >= 0) {
+          const cards = [...s.cards];
+          cards[i] = { ...cards[i], game: d, notice: "取得し直しました", error: "" };
+          return { ...s, cards };
+        }
+        const card: FetchCard = { key, game: d, saved: null, notice: "", error: "" };
+        return { ...s, cards: [card, ...s.cards] };
+      });
     } catch (e) {
       patch({ error: errorMessage(e) });
     } finally {
@@ -208,28 +249,32 @@ function FetchTab({
     }
   };
 
-  const handleFetch = () =>
-    run(async () => {
-      const d = await KifuService.Fetch(input);
-      patch({ preview: d, saved: null });
-    });
-
   // 保存は取得し直さず、いま表示している内容をそのまま書き込む。
-  // 入力とプレビューは残す（保存後に URL をコピーしたり取り直したりできるように）。
-  const handleSave = () =>
-    run(async () => {
-      if (!preview) return;
-      const rec = await KifuService.Save(preview);
-      patch({ saved: rec, notice: `保存しました: ${rec.event || rec.sourceId}` });
+  // 入力とカードは残す（保存後に URL をコピーしたり取り直したりできるように）。
+  const handleSave = async (card: FetchCard) => {
+    setSavingKey(card.key);
+    patchCard(card.key, { error: "", notice: "" });
+    try {
+      const rec = await KifuService.Save(card.game);
+      patchCard(card.key, { saved: rec, notice: `保存しました: ${rec.event || rec.sourceId}` });
       onSaved();
-    });
+    } catch (e) {
+      patchCard(card.key, { error: errorMessage(e) });
+    } finally {
+      setSavingKey("");
+    }
+  };
+
+  const removeCard = (key: string) =>
+    setState((s) => ({ ...s, cards: s.cards.filter((c) => c.key !== key) }));
 
   return (
     <section>
       <h2>棋譜を取得</h2>
       <p className="hint">
         読売(竜王戦)の対局ページ URL、棋譜ビューアの URL、棋譜 ID のいずれかを入力してください。
-        取得した内容を確認してから保存します。
+        取得した内容を確認してから保存します。取得するたびにカードが増えるので、
+        複数の対局を並べて追えます（同じ棋譜を取り直したときはそのカードが最新化されます）。
       </p>
 
       <div className="row">
@@ -248,8 +293,8 @@ function FetchTab({
         </button>
         <button
           onClick={() => setState(emptyFetchState)}
-          disabled={busy || (!input && !preview)}
-          title="入力と取得結果をクリアする"
+          disabled={busy || (!input && cards.length === 0)}
+          title="入力と取得したカードをすべてクリアする"
         >
           クリア
         </button>
@@ -257,48 +302,90 @@ function FetchTab({
 
       {busy && <p className="notice">通信中…</p>}
       {error && <p className="error">{error}</p>}
-      {notice && <p className="notice">{notice}</p>}
 
-      {preview && (
-        <div className="preview">
-          <GamePreview game={preview} />
-
-          {!preview.finished && (
-            <p className="hint">
-              まだ終局していません。対局中の棋譜は随時更新されるため、
-              保存しても後で取り直す必要があります（同じ棋譜なら保存し直しても増えません）。
-              対局中はこのまま「取得 URL」を外部ツールに渡すと、開くたびに最新が取れます。
-            </p>
-          )}
-
-          <div className="row">
-            <button className="primary" onClick={handleSave} disabled={busy}>
-              {saved ? "保存し直す" : "この内容を保存"}
-            </button>
-            {saved && (
-              <CopyURLButton
-                label="棋譜 URL をコピー"
-                title="保存済み棋譜の URL（サイトへは取りに行かない）"
-                load={() => ServerService.KifuURLs(saved.id)}
-              />
-            )}
-            <CopyURLButton
-              label="取得 URL をコピー"
-              title="開くたびにサイトから取り直す URL（対局中向け）"
-              load={() => ServerService.SourceURLs(preview.sourceId)}
-            />
-          </div>
-        </div>
-      )}
+      {cards.map((card) => (
+        <FetchCardView
+          key={card.key}
+          card={card}
+          busy={savingKey === card.key}
+          onSave={() => handleSave(card)}
+          onRemove={() => removeCard(card.key)}
+        />
+      ))}
     </section>
   );
 }
 
-/** 取得・登録の共通プレビュー（読み取れた対局情報と KIF 本文）。 */
-function GamePreview({ game }: { game: GameDetail }) {
+/** 取得タブのカード1枚。プレビューと、そのカードに対する保存・削除。 */
+function FetchCardView({
+  card,
+  busy,
+  onSave,
+  onRemove,
+}: {
+  card: FetchCard;
+  busy: boolean;
+  onSave: () => void;
+  onRemove: () => void;
+}) {
+  const { game, saved, notice, error } = card;
+
+  return (
+    <div className="preview">
+      <div className="row space-between">
+        <h3>{game.event || "(棋戦名なし)"}</h3>
+        <button
+          className="danger"
+          onClick={onRemove}
+          disabled={busy}
+          title="このカードを閉じる（保存済みの棋譜は消えない）"
+        >
+          削除
+        </button>
+      </div>
+
+      <GamePreview game={game} showTitle={false} />
+
+      {!game.finished && (
+        <p className="hint">
+          まだ終局していません。対局中の棋譜は随時更新されるため、
+          保存しても後で取り直す必要があります（同じ棋譜なら保存し直しても増えません）。
+          対局中はこのまま「取得 URL」を外部ツールに渡すと、開くたびに最新が取れます。
+        </p>
+      )}
+
+      {error && <p className="error">{error}</p>}
+      {notice && <p className="notice">{notice}</p>}
+
+      <div className="row">
+        <button className="primary" onClick={onSave} disabled={busy}>
+          {saved ? "保存し直す" : "この内容を保存"}
+        </button>
+        {saved && (
+          <CopyURLButton
+            label="棋譜 URL をコピー"
+            title="保存済み棋譜の URL（サイトへは取りに行かない）"
+            load={() => ServerService.KifuURLs(saved.id)}
+          />
+        )}
+        <CopyURLButton
+          label="取得 URL をコピー"
+          title="開くたびにサイトから取り直す URL（対局中向け）"
+          load={() => ServerService.SourceURLs(game.sourceId)}
+        />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 取得・登録の共通プレビュー（読み取れた対局情報と KIF 本文）。
+ * 取得タブのカードは見出しの行に削除ボタンを並べるため、棋戦名を自分で出す（showTitle=false）。
+ */
+function GamePreview({ game, showTitle = true }: { game: GameDetail; showTitle?: boolean }) {
   return (
     <>
-      <h3>{game.event || "(棋戦名なし)"}</h3>
+      {showTitle && <h3>{game.event || "(棋戦名なし)"}</h3>}
       <dl className="meta">
         <dt>先手</dt>
         <dd>{game.black || "-"}</dd>
