@@ -48,10 +48,12 @@ func main() {
 	})
 
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:            "kicho - 棋帳",
-		Width:            1100,
-		Height:           720,
-		BackgroundColour: application.NewRGB(250, 250, 250),
+		Title:  "kicho - 棋帳",
+		Width:  1100,
+		Height: 720,
+		// フロントを描くまでの地の色。app.css の既定テーマ(ダーク)の --bg と
+		// 揃えておかないと起動時に一瞬明るい色が出る。テーマを変えたらここも直す。
+		BackgroundColour: application.NewRGB(22, 24, 28),
 		URL:              "/",
 	})
 

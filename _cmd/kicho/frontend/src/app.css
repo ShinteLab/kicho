@@ -1,13 +1,83 @@
-:root {
+/*
+ * 配色はすべて CSS 変数で持つ。**規則の中に色の直値を書かないこと。**
+ * 直値が混ざるとテーマを足すたびに拾い漏らす。
+ *
+ * 既定はダーク。ライト（もとの配色）は消さずに残してあり、
+ * <html data-theme="light"> で切り替わる。将来トグルを付けるときは
+ * document.documentElement.dataset.theme を "light" / "dark" にするだけでよい。
+ *
+ * OS の設定には追従させていない（既定はあくまでダーク）。追従させるなら
+ * prefers-color-scheme を見て data-theme を立てる側で決める。
+ *
+ * color-scheme はネイティブ部品（日付入力のカレンダー・数値スピナー・select の
+ * ドロップダウン・スクロールバー）を追従させるために要る。テーマごとに必ず書く。
+ */
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #16181c;
+  --panel: #1e2126;
+  /* ボタンの hover と、パネル上でわずかに浮かせたい面（code） */
+  --panel-hover: #272b31;
+  /* パネルより一段沈める面（KIF 本文） */
+  --inset: #131519;
+  --input-bg: #22262c;
+  --border: #333941;
+  --text: #e4e6ea;
+  --muted: #9aa1ab;
+
+  /* 文字・下線のアクセントと、塗りボタンの地は別に持つ。
+     暗い地の上では、読める文字色と押せる見た目のボタン地が同じ明度にならない。 */
+  --accent: #79b0e8;
+  --accent-bg: #33689f;
+  --accent-bg-hover: #3f7cba;
+  --accent-fg: #ffffff;
+
+  --danger: #e58079;
+  --error-bg: #2c1c1c;
+  --error-border: #5c3531;
+  --error-text: #f0aaa4;
+  --warn-bg: #2b2417;
+  --warn-border: #5e4b26;
+  --warn-text: #e9cf9d;
+
+  --th-bg: #23272e;
+  --selected-bg: #24313f;
+  --on: #5cb463;
+  --off: #565c65;
+}
+
+/* ライト（もとの配色）。将来の切り替え用に残してある。 */
+:root[data-theme="light"] {
+  color-scheme: light;
+
   --bg: #fafafa;
   --panel: #ffffff;
+  --panel-hover: #f0f0f2;
+  --inset: #f6f6f8;
+  --input-bg: #ffffff;
   --border: #d8d8dc;
   --text: #1c1c1e;
   --muted: #6b6b70;
+
   --accent: #2f5d8c;
+  --accent-bg: #2f5d8c;
+  --accent-bg-hover: #26496e;
+  --accent-fg: #ffffff;
+
   --danger: #a3312c;
+  --error-bg: #fbeceb;
+  --error-border: #e9c4c2;
+  --error-text: #a3312c;
   --warn-bg: #fdf3e2;
   --warn-border: #e0b872;
+  --warn-text: #1c1c1e;
+
+  --th-bg: #f2f2f4;
+  --selected-bg: #eef3f9;
+  --on: #3f9147;
+  --off: #b0b0b5;
 }
 
 * {
@@ -123,7 +193,7 @@ select {
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: var(--panel);
+  background: var(--input-bg);
   color: var(--text);
   font: inherit;
 }
@@ -143,7 +213,7 @@ button {
 }
 
 button:hover:not(:disabled) {
-  background: #f0f0f2;
+  background: var(--panel-hover);
 }
 
 button:disabled {
@@ -152,13 +222,14 @@ button:disabled {
 }
 
 button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  background: var(--accent-bg);
+  border-color: var(--accent-bg);
+  color: var(--accent-fg);
 }
 
 button.primary:hover:not(:disabled) {
-  background: #26496e;
+  background: var(--accent-bg-hover);
+  border-color: var(--accent-bg-hover);
 }
 
 button.danger {
@@ -166,9 +237,9 @@ button.danger {
 }
 
 .error {
-  color: var(--danger);
-  background: #fbeceb;
-  border: 1px solid #e9c4c2;
+  color: var(--error-text);
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
   border-radius: 4px;
   padding: 8px 10px;
   white-space: pre-wrap;
@@ -179,6 +250,7 @@ button.danger {
 }
 
 .warning {
+  color: var(--warn-text);
   background: var(--warn-bg);
   border: 1px solid var(--warn-border);
   border-radius: 4px;
@@ -209,7 +281,7 @@ button.danger {
 }
 
 .kif {
-  background: #f6f6f8;
+  background: var(--inset);
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 10px;
@@ -238,7 +310,7 @@ button.danger {
 }
 
 .table th {
-  background: #f2f2f4;
+  background: var(--th-bg);
   color: var(--muted);
   font-weight: 600;
 }
@@ -248,7 +320,7 @@ button.danger {
 }
 
 .table tr.selected td {
-  background: #eef3f9;
+  background: var(--selected-bg);
 }
 
 .table .num {
@@ -275,7 +347,7 @@ button.danger {
   margin-bottom: 12px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: var(--panel);
+  background: var(--input-bg);
   color: var(--text);
   font-family: "Consolas", "Yu Gothic UI", monospace;
   font-size: 12.5px;
@@ -298,7 +370,7 @@ button.danger {
   padding: 5px 6px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: var(--panel);
+  background: var(--input-bg);
   color: var(--text);
   font: inherit;
 }
@@ -354,11 +426,11 @@ button.danger {
 }
 
 .dot.on {
-  background: #3f9147;
+  background: var(--on);
 }
 
 .dot.off {
-  background: #b0b0b5;
+  background: var(--off);
 }
 
 .urls {
@@ -368,7 +440,7 @@ button.danger {
 }
 
 code {
-  background: #f0f0f2;
+  background: var(--panel-hover);
   border-radius: 3px;
   padding: 1px 5px;
   font-family: "Consolas", monospace;
