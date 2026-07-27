@@ -265,6 +265,12 @@ button.danger {
   margin-top: 16px;
 }
 
+/* カード見出しの右に並べる操作（更新・削除）。行の中の行なので下余白は殺す。 */
+.card-actions {
+  gap: 6px;
+  margin-bottom: 0;
+}
+
 .meta {
   display: grid;
   grid-template-columns: max-content 1fr;

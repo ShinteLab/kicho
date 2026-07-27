@@ -45,6 +45,30 @@ const emptyFetchState: FetchState = {
   error: "",
 };
 
+/**
+ * 取得結果をカードへ反映する。key が一致するカードがあれば増やさず、
+ * 位置と保存済みの情報（saved）を保ったまま中身だけ差し替える。
+ */
+function mergeCard(cards: FetchCard[], key: string, game: GameDetail): FetchCard[] {
+  const i = cards.findIndex((c) => c.key === key);
+  if (i < 0) return [{ key, game, saved: null, notice: "", error: "" }, ...cards];
+  const next = [...cards];
+  next[i] = { ...next[i], game, notice: refreshNotice(next[i], game), error: "" };
+  return next;
+}
+
+/**
+ * 取り直したときの案内。手数の変化を出す（対局中は進んだかどうかが知りたいため）。
+ *
+ * 保存は画面の内容をそのまま書き込むので、更新しただけでは保存済みの棋譜は古いまま。
+ * 保存済みのカードで手数が変わったときは保存し直すよう促す。
+ */
+function refreshNotice(prev: FetchCard, game: GameDetail): string {
+  if (game.moves === prev.game.moves) return "最新化しました（手数は変わっていません）";
+  const head = `最新化しました（${prev.game.moves} → ${game.moves} 手）`;
+  return prev.saved ? `${head}。保存し直すと保存済みの棋譜も最新になります` : head;
+}
+
 /** 登録タブの入力方法。 */
 type ImportMode = "url" | "paste";
 
@@ -214,8 +238,8 @@ function FetchTab({
 }) {
   // 通信中フラグは一時的なものなのでタブ内に持つ。
   const [busy, setBusy] = useState(false);
-  // 保存中のカード。保存はカード単位なのでどれを処理中か持つ。
-  const [savingKey, setSavingKey] = useState("");
+  // 更新・保存はカード単位なので、どのカードで何を処理中かを持つ。
+  const [pending, setPending] = useState<{ key: string; kind: CardAction } | null>(null);
 
   const { input, cards, error } = state;
   const patch = (p: Partial<FetchState>) => setState((s) => ({ ...s, ...p }));
@@ -231,17 +255,7 @@ function FetchTab({
     try {
       const d = await KifuService.Fetch(input);
       const key = d.sourceId || d.sourceUrl || input.trim();
-      setState((s) => {
-        const i = s.cards.findIndex((c) => c.key === key);
-        // 取り直しなら、位置と保存済みの情報を保ったまま中身だけ差し替える。
-        if (i >= 0) {
-          const cards = [...s.cards];
-          cards[i] = { ...cards[i], game: d, notice: "取得し直しました", error: "" };
-          return { ...s, cards };
-        }
-        const card: FetchCard = { key, game: d, saved: null, notice: "", error: "" };
-        return { ...s, cards: [card, ...s.cards] };
-      });
+      setState((s) => ({ ...s, cards: mergeCard(s.cards, key, d) }));
     } catch (e) {
       patch({ error: errorMessage(e) });
     } finally {
@@ -249,10 +263,26 @@ function FetchTab({
     }
   };
 
+  // 更新はそのカードの棋譜 ID でサイトへ取り直す。対局中は棋譜が伸びていくため、
+  // 保存の前にこれを押して画面の内容を最新にする（保存は画面の内容をそのまま書く）。
+  // ID を直接渡すので、対局ページ URL から ID を引き直す往復は挟まらない。
+  const handleRefresh = async (card: FetchCard) => {
+    setPending({ key: card.key, kind: "refresh" });
+    patchCard(card.key, { error: "", notice: "" });
+    try {
+      const d = await KifuService.Fetch(card.game.sourceId);
+      setState((s) => ({ ...s, cards: mergeCard(s.cards, card.key, d) }));
+    } catch (e) {
+      patchCard(card.key, { error: errorMessage(e) });
+    } finally {
+      setPending(null);
+    }
+  };
+
   // 保存は取得し直さず、いま表示している内容をそのまま書き込む。
   // 入力とカードは残す（保存後に URL をコピーしたり取り直したりできるように）。
   const handleSave = async (card: FetchCard) => {
-    setSavingKey(card.key);
+    setPending({ key: card.key, kind: "save" });
     patchCard(card.key, { error: "", notice: "" });
     try {
       const rec = await KifuService.Save(card.game);
@@ -261,7 +291,7 @@ function FetchTab({
     } catch (e) {
       patchCard(card.key, { error: errorMessage(e) });
     } finally {
-      setSavingKey("");
+      setPending(null);
     }
   };
 
@@ -307,7 +337,8 @@ function FetchTab({
         <FetchCardView
           key={card.key}
           card={card}
-          busy={savingKey === card.key}
+          pending={pending?.key === card.key ? pending.kind : null}
+          onRefresh={() => handleRefresh(card)}
           onSave={() => handleSave(card)}
           onRemove={() => removeCard(card.key)}
         />
@@ -316,41 +347,57 @@ function FetchTab({
   );
 }
 
-/** 取得タブのカード1枚。プレビューと、そのカードに対する保存・削除。 */
+/** カード単位の通信。ボタンの表示を処理中に切り替えるのに使う。 */
+type CardAction = "refresh" | "save";
+
+/** 取得タブのカード1枚。プレビューと、そのカードに対する更新・保存・削除。 */
 function FetchCardView({
   card,
-  busy,
+  pending,
+  onRefresh,
   onSave,
   onRemove,
 }: {
   card: FetchCard;
-  busy: boolean;
+  pending: CardAction | null;
+  onRefresh: () => void;
   onSave: () => void;
   onRemove: () => void;
 }) {
   const { game, saved, notice, error } = card;
+  const busy = pending !== null;
 
   return (
     <div className="preview">
       <div className="row space-between">
         <h3>{game.event || "(棋戦名なし)"}</h3>
-        <button
-          className="danger"
-          onClick={onRemove}
-          disabled={busy}
-          title="このカードを閉じる（保存済みの棋譜は消えない）"
-        >
-          削除
-        </button>
+        <span className="row card-actions">
+          <button
+            onClick={onRefresh}
+            disabled={busy || !game.sourceId}
+            title="サイトから取り直してこのカードを最新にする（対局中は棋譜が伸びる）"
+          >
+            {pending === "refresh" ? "更新中…" : "更新"}
+          </button>
+          <button
+            className="danger"
+            onClick={onRemove}
+            disabled={busy}
+            title="このカードを閉じる（保存済みの棋譜は消えない）"
+          >
+            削除
+          </button>
+        </span>
       </div>
 
       <GamePreview game={game} showTitle={false} />
 
       {!game.finished && (
         <p className="hint">
-          まだ終局していません。対局中の棋譜は随時更新されるため、
-          保存しても後で取り直す必要があります（同じ棋譜なら保存し直しても増えません）。
-          対局中はこのまま「取得 URL」を外部ツールに渡すと、開くたびに最新が取れます。
+          まだ終局していません。保存はいま表示している内容をそのまま書き込むので、
+          最新の棋譜を保存したいときは先に「更新」を押してください
+          （同じ棋譜なら保存し直しても増えません）。 対局中はこのまま「取得 URL」を外部ツールに渡すと、
+          開くたびに最新が取れます。
         </p>
       )}
 
@@ -359,7 +406,7 @@ function FetchCardView({
 
       <div className="row">
         <button className="primary" onClick={onSave} disabled={busy}>
-          {saved ? "保存し直す" : "この内容を保存"}
+          {pending === "save" ? "保存中…" : saved ? "保存し直す" : "この内容を保存"}
         </button>
         {saved && (
           <CopyURLButton
