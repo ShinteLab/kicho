@@ -18,10 +18,11 @@ import (
 
 // Library は棋譜の取得・保存・配信をまとめたもの。
 type Library struct {
-	store   *store.Store
-	yomiuri *scrape.Yomiuri
-	server  *httpapi.Server
-	logger  *slog.Logger
+	store     *store.Store
+	yomiuri   *scrape.Yomiuri
+	shogilive *scrape.ShogiLive
+	server    *httpapi.Server
+	logger    *slog.Logger
 }
 
 // Open は棋譜 DB を開いて Library を作る。dbPath が空なら既定の保存先を使う。
@@ -41,11 +42,13 @@ func Open(dbPath string, logger *slog.Logger) (*Library, error) {
 		return nil, err
 	}
 	y := scrape.NewYomiuri()
+	sl := scrape.NewShogiLive()
 	return &Library{
-		store:   st,
-		yomiuri: y,
-		server:  httpapi.New(st, y, logger),
-		logger:  logger,
+		store:     st,
+		yomiuri:   y,
+		shogilive: sl,
+		server:    httpapi.New(st, y, sl, logger),
+		logger:    logger,
 	}, nil
 }
 
@@ -78,6 +81,22 @@ func (l *Library) ResolveRyuohURL(ctx context.Context, pageURL string) (string, 
 func (l *Library) FetchRyuoh(ctx context.Context, id string) (*scrape.Game, error) {
 	return l.yomiuri.FetchGame(ctx, id)
 }
+
+// ResolveShogiLiveInput は連盟の中継ページ URL / .kif の URL / 棋譜 ID を
+// 中継の棋譜 ID に解決する。
+func (l *Library) ResolveShogiLiveInput(ctx context.Context, input string) (string, error) {
+	return l.shogilive.ResolveID(ctx, input)
+}
+
+// FetchShogiLive は連盟の中継から棋譜 ID で取得する(保存はしない。プレビュー用)。
+// 返る KIF はサイトが配信している原本(文字コードだけ UTF-8 に寄せたもの)。
+func (l *Library) FetchShogiLive(ctx context.Context, id string) (*scrape.LiveKifu, error) {
+	return l.shogilive.FetchGame(ctx, id)
+}
+
+// ShogiLiveViewerURL は中継ページ(HTML)の URL を組み立てる(保存時の諸元用)。
+// 人が開いて確認するのは .kif ではなくこちら。
+func (l *Library) ShogiLiveViewerURL(id string) string { return l.shogilive.ViewerURL(id) }
 
 // Save は取得済みの棋譜を保存する。
 //

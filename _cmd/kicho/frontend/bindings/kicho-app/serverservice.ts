@@ -25,9 +25,12 @@ export function KifuURLs(id: string): $CancellablePromise<string[] | null> {
 /**
  * SourceURLs は取得元から直接取得する URL(ライブ経路)を返す。
  * 対局中の棋譜はこちらを渡す(外部ツールが開くたびにサイトから取り直す)。
+ * 
+ * サイトの URL ではなく kicho 経由の URL を返す。連盟の中継は Shift_JIS で
+ * 配信されているので、kicho を通して UTF-8 に寄せたものを渡すため。
  */
-export function SourceURLs(sourceID: string): $CancellablePromise<string[] | null> {
-    return $Call.ByID(1802713013, sourceID);
+export function SourceURLs(source: string, sourceID: string): $CancellablePromise<string[] | null> {
+    return $Call.ByID(1802713013, source, sourceID);
 }
 
 /**

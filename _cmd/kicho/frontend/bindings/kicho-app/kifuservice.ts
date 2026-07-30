@@ -34,8 +34,12 @@ export function Delete(id: string): $CancellablePromise<void> {
 }
 
 /**
- * Fetch は読売から棋譜を取得する(保存はしない)。
- * 入力は対局ページ URL でも棋譜ビューアの URL でも棋譜 ID でもよい。
+ * Fetch はライブ中継から棋譜を取得する(保存はしない)。
+ * 
+ * 取得元は入力から判別する。
+ * 
+ *   - live.shogi.or.jp の URL      → 日本将棋連盟の棋譜中継
+ *   - それ以外(URL / 棋譜 ID)      → 読売(竜王戦)
  * 
  * 対局中の棋譜も取得できる(その場合 Finished は false)。
  */
@@ -85,6 +89,16 @@ export function PreviewKIF(text: string): $CancellablePromise<$models.GameDetail
  */
 export function PreviewURL(rawURL: string): $CancellablePromise<$models.GameDetail> {
     return $Call.ByID(1242984209, rawURL);
+}
+
+/**
+ * Refresh は取得済みのカードを取り直す。
+ * 
+ * 入力欄からの Fetch と違って取得元が分かっているので、判別も
+ * 中継ページ→棋譜 ID の往復も挟まらず、棋譜 ID で直接取りに行く。
+ */
+export function Refresh(source: string, sourceID: string): $CancellablePromise<$models.GameDetail> {
+    return $Call.ByID(3395125263, source, sourceID);
 }
 
 /**

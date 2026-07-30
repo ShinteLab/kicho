@@ -14,8 +14,12 @@ type Tab = "fetch" | "import" | "library" | "server";
  */
 type FetchCard = {
   /**
-   * カードの識別子。取得元の棋譜 ID をそのまま使う。
+   * カードの識別子。「取得元 + その棋譜 ID」。
    * 対局中の棋譜を取り直したときにカードが増えず、同じカードが最新化される。
+   *
+   * 取得元を含めるのは、棋譜 ID の形が取得元ごとに違うため
+   * （読売は 24 桁の ID、連盟は中継のパス）。保存側が
+   * `(source, source_id)` で同一性を見るのと同じ粒度にしてある。
    */
   key: string;
   game: GameDetail;
@@ -24,6 +28,27 @@ type FetchCard = {
   notice: string;
   error: string;
 };
+
+/** 取得元の表示名。カードにどのサイトから取ったかを出す。 */
+const SOURCE_LABELS: Record<string, string> = {
+  yomiuri: "読売（竜王戦）",
+  shogilive: "将棋連盟 中継",
+};
+
+/** カードの識別子。取得元ごとに棋譜 ID の形が違うので取得元も含める。 */
+function cardKey(game: GameDetail): string {
+  return `${game.source}:${game.sourceId}`;
+}
+
+/**
+ * ライブ取得できる取得元かどうか（＝「取得 URL」を出せるか）。
+ *
+ * URL 取り込み・貼り付けは取得元での一意な ID が無く sourceId が毎回新しい UUID
+ * なので、そこへ取り直しに行くことはできない。
+ */
+function isLiveSource(source: string): boolean {
+  return source in SOURCE_LABELS;
+}
 
 /**
  * 取得タブの状態。タブを切り替えると中身がアンマウントされるため、
@@ -254,8 +279,7 @@ function FetchTab({
     patch({ error: "" });
     try {
       const d = await KifuService.Fetch(input);
-      const key = d.sourceId || d.sourceUrl || input.trim();
-      setState((s) => ({ ...s, cards: mergeCard(s.cards, key, d) }));
+      setState((s) => ({ ...s, cards: mergeCard(s.cards, cardKey(d), d) }));
     } catch (e) {
       patch({ error: errorMessage(e) });
     } finally {
@@ -263,14 +287,14 @@ function FetchTab({
     }
   };
 
-  // 更新はそのカードの棋譜 ID でサイトへ取り直す。対局中は棋譜が伸びていくため、
+  // 更新はそのカードの取得元と棋譜 ID でサイトへ取り直す。対局中は棋譜が伸びていくため、
   // 保存の前にこれを押して画面の内容を最新にする（保存は画面の内容をそのまま書く）。
-  // ID を直接渡すので、対局ページ URL から ID を引き直す往復は挟まらない。
+  // 取得元が分かっているので、URL から棋譜 ID を引き直す往復は挟まらない。
   const handleRefresh = async (card: FetchCard) => {
     setPending({ key: card.key, kind: "refresh" });
     patchCard(card.key, { error: "", notice: "" });
     try {
-      const d = await KifuService.Fetch(card.game.sourceId);
+      const d = await KifuService.Refresh(card.game.source, card.game.sourceId);
       setState((s) => ({ ...s, cards: mergeCard(s.cards, card.key, d) }));
     } catch (e) {
       patchCard(card.key, { error: errorMessage(e) });
@@ -302,17 +326,26 @@ function FetchTab({
     <section>
       <h2>棋譜を取得</h2>
       <p className="hint">
-        読売(竜王戦)の対局ページ URL、棋譜ビューアの URL、棋譜 ID のいずれかを入力してください。
-        取得した内容を確認してから保存します。取得するたびにカードが増えるので、
-        複数の対局を並べて追えます（同じ棋譜を取り直したときはそのカードが最新化されます）。
+        対局中に随時更新される中継から取得します。取得した内容を確認してから保存します。
+        取得するたびにカードが増えるので、複数の対局を並べて追えます
+        （同じ棋譜を取り直したときはそのカードが最新化されます）。
       </p>
+      <ul className="hint">
+        <li>
+          <strong>読売（竜王戦）</strong>: 対局ページ URL、棋譜ビューアの URL、棋譜 ID
+        </li>
+        <li>
+          <strong>将棋連盟の中継</strong>: <code>live.shogi.or.jp</code> の中継ページ URL（
+          <code>.html</code>）または <code>.kif</code> の URL
+        </li>
+      </ul>
 
       <div className="row">
         <input
           className="grow"
           type="text"
           value={input}
-          placeholder="https://www.yomiuri.co.jp/igoshougi/ryuoh/kifu/..."
+          placeholder="http://live.shogi.or.jp/oui/kifu/67/oui202607290101.html"
           onChange={(e) => patch({ input: e.target.value })}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !busy && input.trim()) handleFetch();
@@ -370,7 +403,10 @@ function FetchCardView({
   return (
     <div className="preview">
       <div className="row space-between">
-        <h3>{game.event || "(棋戦名なし)"}</h3>
+        <h3>
+          {game.event || "(棋戦名なし)"}
+          <span className="source-tag">{SOURCE_LABELS[game.source] || game.source}</span>
+        </h3>
         <span className="row card-actions">
           <button
             onClick={onRefresh}
@@ -418,7 +454,7 @@ function FetchCardView({
         <CopyURLButton
           label="取得 URL をコピー"
           title="開くたびにサイトから取り直す URL（対局中向け）"
-          load={() => ServerService.SourceURLs(game.sourceId)}
+          load={() => ServerService.SourceURLs(game.source, game.sourceId)}
         />
       </div>
     </div>
@@ -583,10 +619,14 @@ function ImportTab({
       )}
       {mode === "url" && (
         <p className="hint">
-          将棋連盟の棋譜中継ページ（<code>live.shogi.or.jp</code> の
-          <code> .html </code>）は、ページが読んでいる
+          棋譜中継ページ（HTML）の URL なら、ページが読んでいる
           <code> .kif </code>
-          を辿って取り込みます。<code>.kif</code> に貼り替える必要はありません。
+          を辿ります。ただし
+          <strong>
+            将棋連盟の中継（<code>live.shogi.or.jp</code>）は「取得」タブを使ってください
+          </strong>
+          。 対局中は棋譜が伸びていくので、カードとして積んで「更新」で取り直せる側が向いています
+          （ここで登録すると取り込むたびに別の棋譜として増えます）。
         </p>
       )}
 
@@ -821,11 +861,11 @@ function LibraryTab({ revision }: { revision: number }) {
               title="保存済み棋譜の URL（サイトへは取りに行かない）"
               load={() => ServerService.KifuURLs(selected.id)}
             />
-            {selected.sourceId && (
+            {isLiveSource(selected.source) && selected.sourceId && (
               <CopyURLButton
                 label="取得 URL をコピー"
                 title="開くたびにサイトから取り直す URL（対局中向け）"
-                load={() => ServerService.SourceURLs(selected.sourceId)}
+                load={() => ServerService.SourceURLs(selected.source, selected.sourceId)}
               />
             )}
           </div>

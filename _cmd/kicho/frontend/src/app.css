@@ -340,6 +340,19 @@ button.danger {
   margin-left: 2px;
 }
 
+/* 取得カードの取得元（読売 / 将棋連盟）。 */
+.source-tag {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: normal;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-left: 8px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
 .copy {
   display: inline-flex;
   align-items: center;

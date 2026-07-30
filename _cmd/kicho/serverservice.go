@@ -11,6 +11,7 @@ import (
 	"github.com/ShinteLab/kicho"
 	"github.com/ShinteLab/kicho/httpapi"
 	"github.com/ShinteLab/kicho/settings"
+	"github.com/ShinteLab/kicho/store"
 )
 
 // ServerService は棋譜配信 HTTP サーバの設定と起動/停止をフロントに公開する。
@@ -135,11 +136,21 @@ func (s *ServerService) KifuURLs(id string) ([]string, error) {
 
 // SourceURLs は取得元から直接取得する URL(ライブ経路)を返す。
 // 対局中の棋譜はこちらを渡す(外部ツールが開くたびにサイトから取り直す)。
-func (s *ServerService) SourceURLs(sourceID string) ([]string, error) {
+//
+// サイトの URL ではなく kicho 経由の URL を返す。連盟の中継は Shift_JIS で
+// 配信されているので、kicho を通して UTF-8 に寄せたものを渡すため。
+func (s *ServerService) SourceURLs(source, sourceID string) ([]string, error) {
 	if strings.TrimSpace(sourceID) == "" {
 		return nil, fmt.Errorf("取得元の棋譜 ID が空です")
 	}
-	return s.urlsFor(httpapi.RyuohKifuPath(sourceID))
+	switch source {
+	case store.SourceShogiLive:
+		return s.urlsFor(httpapi.ShogiLiveKifuPath(sourceID))
+	case store.SourceYomiuri, "":
+		return s.urlsFor(httpapi.RyuohKifuPath(sourceID))
+	default:
+		return nil, fmt.Errorf("ライブ取得に対応していない取得元です: %s", source)
+	}
 }
 
 func (s *ServerService) urlsFor(path string) ([]string, error) {

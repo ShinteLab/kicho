@@ -3,48 +3,32 @@ package kicho
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
-	"golang.org/x/text/encoding/japanese"
-	"golang.org/x/text/transform"
 
 	"github.com/ShinteLab/core/kifu"
 	"github.com/ShinteLab/kicho/format"
+	"github.com/ShinteLab/kicho/scrape"
 	"github.com/ShinteLab/kicho/store"
 )
 
 // maxKifuBytes は取り込む KIF の上限。棋譜1局は大きくても数十 KB なので、
 // 誤って巨大なファイルや HTML を掴んだときに落とすための保険。
-const maxKifuBytes = 4 << 20 // 4MiB
+const maxKifuBytes = scrape.MaxKifuBytes
 
-// 文字コードの記録に使う名前。
+// 文字コードの記録に使う名前。実体は scrape 側(取得元と共通)。
 const (
-	EncodingUTF8     = "utf-8"
-	EncodingShiftJIS = "shift_jis"
+	EncodingUTF8     = scrape.EncodingUTF8
+	EncodingShiftJIS = scrape.EncodingShiftJIS
 )
 
 // DecodeKIF は棋譜のバイト列を UTF-8 文字列にし、元の文字コード名を返す。
-//
-// 世に出回っている .kif は **Shift_JIS が多い**（Kifu for Windows 等の既定）。
-// UTF-8 として妥当ならそのまま、そうでなければ Shift_JIS として解釈する。
-//
-// 保存する本文は UTF-8 に寄せる。元の文字コードは記録だけ残す（主にデバッグ用）。
-func DecodeKIF(b []byte) (text, encoding string, err error) {
-	if utf8.Valid(b) {
-		return string(b), EncodingUTF8, nil
-	}
-	out, _, err := transform.Bytes(japanese.ShiftJIS.NewDecoder(), b)
-	if err != nil {
-		return "", "", fmt.Errorf("文字コードを判別できませんでした（UTF-8 でも Shift_JIS でもありません）: %w", err)
-	}
-	return string(out), EncodingShiftJIS, nil
-}
+// 判別は取得元と共通なので scrape に置いてある。
+func DecodeKIF(b []byte) (text, encoding string, err error) { return scrape.DecodeKIF(b) }
 
 // ImportKIF は KIF テキストを解析して保存する。
 //
@@ -71,9 +55,13 @@ func (l *Library) ImportURL(ctx context.Context, rawURL string) (store.Record, e
 // 本文は UTF-8 に寄せ、元の文字コード名も返す。
 //
 // .kif が返ってくればそのまま読む。HTML（棋譜中継ページ）が返ってきた場合だけ、
-// そこに書かれている .kif の URL を辿って取り直す（`importer_html.go`）。
+// そこに書かれている .kif の URL を辿って取り直す（`scrape.KifURLFromHTML`）。
 // 中継ページの URL をそのまま貼れるようにするためで、
 // **ページから対局内容を読み取っているわけではない**（取り込むのは .kif の原本）。
+//
+// なお、**日本将棋連盟の中継（live.shogi.or.jp）は取得タブで扱う。**
+// 対局中に随時更新されるため、カードとして積んで「更新」で取り直せる側に置いてある。
+// ここを通るのは終局後の .kif を単発で取り込む場合など。
 func (l *Library) FetchKIFFromURL(ctx context.Context, rawURL string) (text, encoding string, err error) {
 	u, err := parseHTTPURL(rawURL)
 	if err != nil {
@@ -84,8 +72,8 @@ func (l *Library) FetchKIFFromURL(ctx context.Context, rawURL string) (text, enc
 	if err != nil {
 		return "", "", err
 	}
-	if looksLikeHTML(b) {
-		kifURL, err := kifURLFromHTML(u, b)
+	if scrape.LooksLikeHTML(b) {
+		kifURL, err := scrape.KifURLFromHTML(u, b)
 		if err != nil {
 			return "", "", err
 		}
@@ -124,15 +112,7 @@ func fetchLimited(ctx context.Context, u *url.URL) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("取得に失敗しました（HTTP %d）: %s", resp.StatusCode, u)
 	}
-
-	b, err := io.ReadAll(io.LimitReader(resp.Body, maxKifuBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("読み込みに失敗しました: %w", err)
-	}
-	if len(b) > maxKifuBytes {
-		return nil, fmt.Errorf("内容が大きすぎます（%d バイト超）", maxKifuBytes)
-	}
-	return b, nil
+	return scrape.ReadLimited(resp.Body)
 }
 
 // ParseKIF は KIF テキストを解析する（保存はしない。取り込み前の確認用）。

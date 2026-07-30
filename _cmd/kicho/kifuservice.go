@@ -52,6 +52,9 @@ type GameSummary struct {
 type GameDetail struct {
 	GameSummary
 	KIF string `json:"kif"`
+	// Encoding は KIF の元の文字コード(本文は UTF-8 に寄せてある)。
+	// 連盟の中継は Shift_JIS なので、保存の記録として一緒に運ぶ。
+	Encoding string `json:"encoding"`
 }
 
 func toSummary(r store.Record) GameSummary {
@@ -75,18 +78,18 @@ func toSummary(r store.Record) GameSummary {
 	return s
 }
 
-// countMoves は KIF テキストから指し手の行数を数える(ヘッダ行を除く)。
+// countMoves は KIF テキストの手数を数える。
 // 手数は store に列として持たせてあるので、保存時にここで数えて渡す。
+//
+// 行数を数えるのではなく core/kifu で解析する。サイトが配信している .kif には
+// コメント行(`*`)や `# --- Kifu for Windows ...` が混ざっており、
+// 行を数えるとそれらまで手数に入ってしまうため。
 func countMoves(kif string) int {
-	n := 0
-	for _, line := range strings.Split(kif, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.Contains(line, "：") || strings.HasPrefix(line, "手数-") {
-			continue
-		}
-		n++
+	doc, err := kicho.ParseKIF(kif)
+	if err != nil {
+		return 0
 	}
-	return n
+	return len(doc.Moves)
 }
 
 // List は保存済み棋譜の一覧を新しい順に返す(KIF 本文は含まない)。
@@ -171,18 +174,59 @@ func (s *KifuService) Delete(id string) error {
 	return s.lib.Store().Delete(context.Background(), id)
 }
 
-// Fetch は読売から棋譜を取得する(保存はしない)。
-// 入力は対局ページ URL でも棋譜ビューアの URL でも棋譜 ID でもよい。
+// Fetch はライブ中継から棋譜を取得する(保存はしない)。
+//
+// 取得元は入力から判別する。
+//
+//   - live.shogi.or.jp の URL      → 日本将棋連盟の棋譜中継
+//   - それ以外(URL / 棋譜 ID)      → 読売(竜王戦)
 //
 // 対局中の棋譜も取得できる(その場合 Finished は false)。
 func (s *KifuService) Fetch(input string) (GameDetail, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	if strings.TrimSpace(input) == "" {
+		return GameDetail{}, fmt.Errorf("URL または棋譜 ID を入力してください")
+	}
+	if scrape.IsShogiLiveURL(input) {
+		id, err := s.lib.ResolveShogiLiveInput(ctx, input)
+		if err != nil {
+			return GameDetail{}, err
+		}
+		return s.fetchShogiLive(ctx, id)
+	}
+
 	id, err := s.resolve(ctx, input)
 	if err != nil {
 		return GameDetail{}, err
 	}
+	return s.fetchRyuoh(ctx, id)
+}
+
+// Refresh は取得済みのカードを取り直す。
+//
+// 入力欄からの Fetch と違って取得元が分かっているので、判別も
+// 中継ページ→棋譜 ID の往復も挟まらず、棋譜 ID で直接取りに行く。
+func (s *KifuService) Refresh(source, sourceID string) (GameDetail, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if strings.TrimSpace(sourceID) == "" {
+		return GameDetail{}, fmt.Errorf("取得元の棋譜 ID が空です")
+	}
+	switch source {
+	case store.SourceShogiLive:
+		return s.fetchShogiLive(ctx, sourceID)
+	case store.SourceYomiuri, "":
+		return s.fetchRyuoh(ctx, sourceID)
+	default:
+		return GameDetail{}, fmt.Errorf("取り直せない取得元です: %s", source)
+	}
+}
+
+// fetchRyuoh は読売のペイロードから KIF を組み立てる。
+func (s *KifuService) fetchRyuoh(ctx context.Context, id string) (GameDetail, error) {
 	g, err := s.lib.FetchRyuoh(ctx, id)
 	if err != nil {
 		return GameDetail{}, err
@@ -201,10 +245,47 @@ func (s *KifuService) Fetch(input string) (GameDetail, error) {
 			Finished: g.Finished(),
 			Moves:    len(g.Moves),
 		},
-		KIF: g.KIF(),
+		// スクレイピングは構造化データから組み立てるので、これ自体が原本。
+		KIF:      g.KIF(),
+		Encoding: kicho.EncodingUTF8,
 	}
 	if !g.StartedAt.IsZero() {
 		d.StartedAt = g.StartedAt.Format(time.RFC3339)
+	}
+	return d, nil
+}
+
+// fetchShogiLive は連盟の中継から .kif を取る。
+//
+// 本文は**サイトが配信している原本のまま**渡す(整形し直さない)。
+// 画面に出すメタデータだけ解析結果から取る。
+func (s *KifuService) fetchShogiLive(ctx context.Context, id string) (GameDetail, error) {
+	g, err := s.lib.FetchShogiLive(ctx, id)
+	if err != nil {
+		return GameDetail{}, err
+	}
+
+	end := g.Doc.EndMark()
+	d := GameDetail{
+		GameSummary: GameSummary{
+			Source:   store.SourceShogiLive,
+			SourceID: g.SourceID,
+			// 諸元: どこから取ったか。人が開いて確認するのは中継ページ。
+			SourceURL: s.lib.ShogiLiveViewerURL(g.SourceID),
+			Event:     g.Doc.Event,
+			Handicap:  g.Doc.Handicap,
+			Place:     g.Doc.Place,
+			Black:     g.Doc.Black,
+			White:     g.Doc.White,
+			EndMark:   end,
+			Finished:  end != "",
+			Moves:     len(g.Doc.Moves),
+		},
+		KIF:      g.KIF,
+		Encoding: g.Encoding,
+	}
+	if !g.Doc.StartedAt.IsZero() {
+		d.StartedAt = g.Doc.StartedAt.Format(time.RFC3339)
 	}
 	return d, nil
 }
@@ -222,11 +303,28 @@ func (s *KifuService) Save(d GameDetail) (GameSummary, error) {
 		return GameSummary{}, fmt.Errorf("棋譜が空です")
 	}
 
+	// 取得元によって諸元(どこから取ったか)の組み立てが変わる。
+	source, sourceURL := d.Source, d.SourceURL
+	switch source {
+	case store.SourceShogiLive:
+		sourceURL = s.lib.ShogiLiveViewerURL(d.SourceID)
+	case store.SourceYomiuri, "":
+		// 取得元が入っていない古い画面状態でも読売として保存できるようにしておく。
+		source = store.SourceYomiuri
+		sourceURL = scrape.ViewerURL(d.SourceID)
+	default:
+		return GameSummary{}, fmt.Errorf("保存できない取得元です: %s", source)
+	}
+
+	encoding := d.Encoding
+	if encoding == "" {
+		encoding = kicho.EncodingUTF8
+	}
+
 	g := store.Game{
-		Source:   store.SourceYomiuri,
-		SourceID: d.SourceID,
-		// 諸元: どこから取ったか。
-		SourceURL: scrape.ViewerURL(d.SourceID),
+		Source:    source,
+		SourceID:  d.SourceID,
+		SourceURL: sourceURL,
 		Event:     d.Event,
 		Handicap:  d.Handicap,
 		Place:     d.Place,
@@ -235,9 +333,10 @@ func (s *KifuService) Save(d GameDetail) (GameSummary, error) {
 		EndMark:   d.EndMark,
 		Moves:     countMoves(d.KIF),
 
+		// 画面に出している内容をそのまま書き込む(サイトへ取り直しには行かない)。
 		Body:     d.KIF,
 		Format:   string(format.KIF),
-		Encoding: kicho.EncodingUTF8,
+		Encoding: encoding,
 	}
 	if d.StartedAt != "" {
 		if t, err := time.Parse(time.RFC3339, d.StartedAt); err == nil {
@@ -259,7 +358,7 @@ func (s *KifuService) PreviewKIF(text string) (GameDetail, error) {
 	if err != nil {
 		return GameDetail{}, err
 	}
-	return docToDetail(doc, store.SourcePaste, ""), nil
+	return docToDetail(doc, store.SourcePaste, "", text, kicho.EncodingUTF8), nil
 }
 
 // ImportKIF は KIF テキストを解析して保存する(貼り付け登録)。
@@ -277,7 +376,7 @@ func (s *KifuService) PreviewURL(rawURL string) (GameDetail, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	text, _, err := s.lib.FetchKIFFromURL(ctx, rawURL)
+	text, encoding, err := s.lib.FetchKIFFromURL(ctx, rawURL)
 	if err != nil {
 		return GameDetail{}, err
 	}
@@ -285,7 +384,7 @@ func (s *KifuService) PreviewURL(rawURL string) (GameDetail, error) {
 	if err != nil {
 		return GameDetail{}, err
 	}
-	return docToDetail(doc, store.SourceURL, rawURL), nil
+	return docToDetail(doc, store.SourceURL, rawURL, text, encoding), nil
 }
 
 // ImportURL は URL から KIF を取得して保存する。
@@ -301,7 +400,11 @@ func (s *KifuService) ImportURL(rawURL string) (GameSummary, error) {
 }
 
 // docToDetail は解析結果を表示用に変換する。
-func docToDetail(doc kifu.Document, source, sourceURL string) GameDetail {
+//
+// 表示する KIF は解析結果を組み立て直したものではなく **原本 (body) をそのまま**使う。
+// 保存されるのも原本なので、画面と保存内容を食い違わせないため
+// (組み立て直すと変化・コメント・不成などが落ちる)。
+func docToDetail(doc kifu.Document, source, sourceURL, body, encoding string) GameDetail {
 	end := doc.EndMark()
 	d := GameDetail{
 		GameSummary: GameSummary{
@@ -316,7 +419,8 @@ func docToDetail(doc kifu.Document, source, sourceURL string) GameDetail {
 			Finished:  end != "",
 			Moves:     len(doc.Moves),
 		},
-		KIF: doc.String(),
+		KIF:      body,
+		Encoding: encoding,
 	}
 	if !doc.StartedAt.IsZero() {
 		d.StartedAt = doc.StartedAt.Format(time.RFC3339)

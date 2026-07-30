@@ -44,6 +44,23 @@ func (f *countingFetcher) FetchGame(ctx context.Context, id string) (*scrape.Gam
 	return &g, nil
 }
 
+// fakeLiveFetcher は連盟の中継(KIF をそのまま返す取得元)の代役。
+type fakeLiveFetcher struct {
+	kif  string
+	err  error
+	ids  []string // 呼ばれた棋譜 ID(パスの受け渡しを見るため)
+	call int
+}
+
+func (f *fakeLiveFetcher) FetchKifu(ctx context.Context, id string) (string, error) {
+	f.call++
+	f.ids = append(f.ids, id)
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.kif, nil
+}
+
 func sampleFetchedGame() *scrape.Game {
 	return &scrape.Game{
 		Event:     "テスト棋戦第１局",
@@ -59,6 +76,22 @@ func sampleFetchedGame() *scrape.Game {
 
 // newTestServer は listen 済みのサーバとベース URL を返す。
 func newTestServer(t *testing.T, f Fetcher) (*Server, *store.Store, string) {
+	return newTestServerWithLive(t, f, &fakeLiveFetcher{kif: sampleLiveKIF})
+}
+
+// sampleLiveKIF は連盟の中継が返す形の KIF(コメント行つき)。
+const sampleLiveKIF = `# --- Kifu for Windows Pro V7.20 棋譜ファイル ---
+開始日時：2026/07/29 09:00
+棋戦：中継テスト棋戦
+手合割：平手
+先手：先手 太郎
+後手：後手 次郎
+手数----指手---------消費時間--
+*コメント行は手数に数えない
+   1 ７六歩(77)   ( 0:16/00:00:16)
+`
+
+func newTestServerWithLive(t *testing.T, f Fetcher, live LiveFetcher) (*Server, *store.Store, string) {
 	t.Helper()
 
 	st, err := store.Open(filepath.Join(t.TempDir(), "kicho.db"))
@@ -68,7 +101,7 @@ func newTestServer(t *testing.T, f Fetcher) (*Server, *store.Store, string) {
 	t.Cleanup(func() { st.Close() })
 
 	logger := slog.New(slog.DiscardHandler)
-	s := New(st, f, logger)
+	s := New(st, f, live, logger)
 
 	// ポート 0 で空きポートを取らせる。
 	if err := s.Start(Config{Host: LoopbackHost, Port: 0}); err != nil {
@@ -318,7 +351,8 @@ func TestStartStopCycle(t *testing.T) {
 	}
 	defer st.Close()
 
-	s := New(st, &fakeFetcher{game: sampleFetchedGame()}, slog.New(slog.DiscardHandler))
+	s := New(st, &fakeFetcher{game: sampleFetchedGame()}, &fakeLiveFetcher{kif: sampleLiveKIF},
+		slog.New(slog.DiscardHandler))
 
 	if running, _ := s.Running(); running {
 		t.Error("should not be running before Start")
@@ -384,12 +418,53 @@ func TestPathBuildersReachTheRoutes(t *testing.T) {
 	})
 }
 
+// 連盟の棋譜 ID はスラッシュを含むパスなので、経路とパス組み立てを別に固定する。
+func TestShogiLivePathReachesTheRoute(t *testing.T) {
+	live := &fakeLiveFetcher{kif: sampleLiveKIF}
+	_, _, base := newTestServerWithLive(t, &fakeFetcher{game: sampleFetchedGame()}, live)
+
+	const id = "oui/kifu/67/oui202607290101"
+	p := ShogiLiveKifuPath(id)
+	resp, body := get(t, base+p)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s = %d, want 200", p, resp.StatusCode)
+	}
+	if !strings.Contains(body, "棋戦：中継テスト棋戦") {
+		t.Errorf("body = %q", body)
+	}
+	// スラッシュを含む ID がそのまま取得元へ渡ること。
+	if len(live.ids) != 1 || live.ids[0] != id {
+		t.Errorf("fetched ids = %q, want [%q]", live.ids, id)
+	}
+	// 対局中は随時更新されるのでキャッシュさせない。
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+}
+
+// 対局中の棋譜なのでリクエストのたびに取りに行くこと(キャッシュしない)。
+func TestShogiLiveKifuIsNotCached(t *testing.T) {
+	live := &fakeLiveFetcher{kif: sampleLiveKIF}
+	_, _, base := newTestServerWithLive(t, &fakeFetcher{game: sampleFetchedGame()}, live)
+
+	p := base + ShogiLiveKifuPath("oui/kifu/67/oui202607290101")
+	get(t, p)
+	get(t, p)
+	if live.call != 2 {
+		t.Errorf("取得回数 = %d, want 2", live.call)
+	}
+}
+
 func TestPathBuildersEscape(t *testing.T) {
 	if got := KifuPath("a/../b"); got != "/kifu/a%2F..%2Fb" {
 		t.Errorf("KifuPath = %q", got)
 	}
 	if got := RyuohKifuPath("a/../b"); got != "/ryuoh/kifu/a%2F..%2Fb" {
 		t.Errorf("RyuohKifuPath = %q", got)
+	}
+	// 連盟はパスが ID なので、スラッシュは区切りとして残しセグメントだけ逃がす。
+	if got := ShogiLiveKifuPath("oui/kifu/67/a b"); got != "/shogilive/kifu/oui/kifu/67/a%20b" {
+		t.Errorf("ShogiLiveKifuPath = %q", got)
 	}
 }
 

@@ -36,6 +36,12 @@ export interface GameDetail {
     "finished": boolean;
     "moves": number;
     "kif": string;
+
+    /**
+     * Encoding は KIF の元の文字コード(本文は UTF-8 に寄せてある)。
+     * 連盟の中継は Shift_JIS なので、保存の記録として一緒に運ぶ。
+     */
+    "encoding": string;
 }
 
 /**

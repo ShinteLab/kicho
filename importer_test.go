@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -281,51 +280,8 @@ func TestImportURLFollowsKifAnchor(t *testing.T) {
 	}
 }
 
-// 中継ページの相対パスが取得元 URL を基準に解決されること。
-func TestKifURLFromHTML(t *testing.T) {
-	base, err := url.Parse("http://live.shogi.or.jp/oui/kifu/67/oui202607290101.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := kifURLFromHTML(base, []byte(relayPage))
-	if err != nil {
-		t.Fatalf("kifURLFromHTML: %v", err)
-	}
-	const want = "http://live.shogi.or.jp/oui/kifu/67/oui202607290101.kif"
-	if got.String() != want {
-		t.Errorf("= %q, want %q", got, want)
-	}
-
-	t.Run("相対パス", func(t *testing.T) {
-		page := []byte(`<html><script>const KIF_FILE_NAME = "oui202607290101.kif";</script></html>`)
-		got, err := kifURLFromHTML(base, page)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got.String() != want {
-			t.Errorf("= %q, want %q", got, want)
-		}
-	})
-
-	t.Run("見つからない", func(t *testing.T) {
-		if _, err := kifURLFromHTML(base, []byte(`<html><body>棋譜はありません</body></html>`)); err == nil {
-			t.Error("エラーにならなかった")
-		}
-	})
-}
-
-func TestLooksLikeHTML(t *testing.T) {
-	if !looksLikeHTML([]byte("\n  <!doctype html>")) {
-		t.Error("HTML を HTML と判定できていない")
-	}
-	// KIF は `<` で始まらない（BOM 付きでも）。
-	for _, s := range []string{importSample, "# --- Kifu for Windows ---\n", "\ufeff開始日時：2026/07/29\n"} {
-		if looksLikeHTML([]byte(s)) {
-			t.Errorf("KIF を HTML と誤判定: %.20q", s)
-		}
-	}
-}
+// HTML の解決そのもの(KIF_FILE_NAME・相対パス・HTML 判定)は
+// 取得元と共通なので scrape 側のテストで固定している(scrape/fetch_test.go)。
 
 func TestImportURLErrors(t *testing.T) {
 	lib := newTestLibrary(t)
