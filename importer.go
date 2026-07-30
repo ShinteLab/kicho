@@ -58,6 +58,7 @@ func (l *Library) ImportKIF(ctx context.Context, text string) (store.Record, err
 //
 // スクレイピングではなく、URL の中身をそのまま KIF として読む。
 // 他サイトの .kif ファイルや、別の kicho の /kifu/{id} を取り込める。
+// 棋譜中継ページ(HTML)の URL を渡した場合はそこから .kif を辿る。
 func (l *Library) ImportURL(ctx context.Context, rawURL string) (store.Record, error) {
 	text, encoding, err := l.FetchKIFFromURL(ctx, rawURL)
 	if err != nil {
@@ -68,38 +69,70 @@ func (l *Library) ImportURL(ctx context.Context, rawURL string) (store.Record, e
 
 // FetchKIFFromURL は URL から棋譜テキストを取得する（保存はしない）。
 // 本文は UTF-8 に寄せ、元の文字コード名も返す。
+//
+// .kif が返ってくればそのまま読む。HTML（棋譜中継ページ）が返ってきた場合だけ、
+// そこに書かれている .kif の URL を辿って取り直す（`importer_html.go`）。
+// 中継ページの URL をそのまま貼れるようにするためで、
+// **ページから対局内容を読み取っているわけではない**（取り込むのは .kif の原本）。
 func (l *Library) FetchKIFFromURL(ctx context.Context, rawURL string) (text, encoding string, err error) {
-	u, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil {
-		return "", "", fmt.Errorf("URL の形式が不正です: %w", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", "", fmt.Errorf("http/https の URL を指定してください: %s", rawURL)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	u, err := parseHTTPURL(rawURL)
 	if err != nil {
 		return "", "", err
+	}
+
+	b, err := fetchLimited(ctx, u)
+	if err != nil {
+		return "", "", err
+	}
+	if looksLikeHTML(b) {
+		kifURL, err := kifURLFromHTML(u, b)
+		if err != nil {
+			return "", "", err
+		}
+		if b, err = fetchLimited(ctx, kifURL); err != nil {
+			return "", "", err
+		}
+	}
+	return DecodeKIF(b)
+}
+
+// parseHTTPURL は入力を http/https の URL として読む。
+func parseHTTPURL(rawURL string) (*url.URL, error) {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return nil, fmt.Errorf("URL の形式が不正です: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("http/https の URL を指定してください: %s", rawURL)
+	}
+	return u, nil
+}
+
+// fetchLimited は URL の中身を maxKifuBytes まで読む。
+func fetchLimited(ctx context.Context, u *url.URL) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
 	}
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", "", fmt.Errorf("取得に失敗しました: %w", err)
+		return nil, fmt.Errorf("取得に失敗しました: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("取得に失敗しました（HTTP %d）", resp.StatusCode)
+		return nil, fmt.Errorf("取得に失敗しました（HTTP %d）: %s", resp.StatusCode, u)
 	}
 
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxKifuBytes+1))
 	if err != nil {
-		return "", "", fmt.Errorf("読み込みに失敗しました: %w", err)
+		return nil, fmt.Errorf("読み込みに失敗しました: %w", err)
 	}
 	if len(b) > maxKifuBytes {
-		return "", "", fmt.Errorf("内容が大きすぎます（%d バイト超）", maxKifuBytes)
+		return nil, fmt.Errorf("内容が大きすぎます（%d バイト超）", maxKifuBytes)
 	}
-	return DecodeKIF(b)
+	return b, nil
 }
 
 // ParseKIF は KIF テキストを解析する（保存はしない。取り込み前の確認用）。

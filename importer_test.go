@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -198,6 +199,134 @@ func TestImportURLShiftJIS(t *testing.T) {
 	}
 }
 
+// relayPage は日本将棋連盟の棋譜中継ページ
+// (http://live.shogi.or.jp/oui/kifu/67/oui202607290101.html) を写したもの。
+// 中継ビューア(kj.js)が読む KIF_FILE_NAME に .kif の在り処が入っている。
+const relayPage = `<!doctype html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>2026年7月29日～7月30日　七番勝負　第３局</title>
+</head>
+<body id="oui">
+<main>
+  <script language="javascript" type="text/javascript">
+    const KJ_DIR = "/common/js/kj/";
+    const KIF_FILE_NAME = "/oui/kifu/67/oui202607290101.kif";
+    const UPDATE_TIME = 1;
+  </script>
+  <script src="/common/js/kj/kj.js"></script>
+</main>
+</body>
+</html>
+`
+
+// 棋譜中継ページ(HTML)の URL を貼っても取り込めること。
+//
+// ページから対局内容を読み取るのではなく、そこに書かれた .kif を辿って
+// **原本をそのまま**取り込む。
+func TestImportURLFollowsRelayPage(t *testing.T) {
+	lib := newTestLibrary(t)
+
+	kif := toShiftJIS(t, importSample) // 連盟の .kif は Shift_JIS
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oui/kifu/67/oui202607290101.html", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+		w.Write([]byte(relayPage))
+	})
+	mux.HandleFunc("/oui/kifu/67/oui202607290101.kif", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=Shift_JIS")
+		w.Write(kif)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	pageURL := srv.URL + "/oui/kifu/67/oui202607290101.html"
+	rec, err := lib.ImportURL(context.Background(), pageURL)
+	if err != nil {
+		t.Fatalf("ImportURL: %v", err)
+	}
+	if rec.Event != "テスト棋戦" || rec.Moves != 3 {
+		t.Errorf("メタデータが取れていない: %+v", rec.Game)
+	}
+	// 出所は貼られた中継ページの URL を残す(.kif に書き換えない)。
+	if rec.SourceURL != pageURL {
+		t.Errorf("SourceURL = %q, want %q", rec.SourceURL, pageURL)
+	}
+	if rec.Encoding != EncodingShiftJIS {
+		t.Errorf("Encoding = %q, want %q", rec.Encoding, EncodingShiftJIS)
+	}
+}
+
+// .kif へのリンクからも辿れること(KIF_FILE_NAME を持たないサイト向けの保険)。
+func TestImportURLFollowsKifAnchor(t *testing.T) {
+	lib := newTestLibrary(t)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/kifu/index.html", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`<html><body><a href="../download/20260729.kif?v=2">棋譜</a></body></html>`))
+	})
+	mux.HandleFunc("/download/20260729.kif", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(importSample))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	rec, err := lib.ImportURL(context.Background(), srv.URL+"/kifu/index.html")
+	if err != nil {
+		t.Fatalf("ImportURL: %v", err)
+	}
+	if rec.Event != "テスト棋戦" {
+		t.Errorf("Event = %q", rec.Event)
+	}
+}
+
+// 中継ページの相対パスが取得元 URL を基準に解決されること。
+func TestKifURLFromHTML(t *testing.T) {
+	base, err := url.Parse("http://live.shogi.or.jp/oui/kifu/67/oui202607290101.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := kifURLFromHTML(base, []byte(relayPage))
+	if err != nil {
+		t.Fatalf("kifURLFromHTML: %v", err)
+	}
+	const want = "http://live.shogi.or.jp/oui/kifu/67/oui202607290101.kif"
+	if got.String() != want {
+		t.Errorf("= %q, want %q", got, want)
+	}
+
+	t.Run("相対パス", func(t *testing.T) {
+		page := []byte(`<html><script>const KIF_FILE_NAME = "oui202607290101.kif";</script></html>`)
+		got, err := kifURLFromHTML(base, page)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.String() != want {
+			t.Errorf("= %q, want %q", got, want)
+		}
+	})
+
+	t.Run("見つからない", func(t *testing.T) {
+		if _, err := kifURLFromHTML(base, []byte(`<html><body>棋譜はありません</body></html>`)); err == nil {
+			t.Error("エラーにならなかった")
+		}
+	})
+}
+
+func TestLooksLikeHTML(t *testing.T) {
+	if !looksLikeHTML([]byte("\n  <!doctype html>")) {
+		t.Error("HTML を HTML と判定できていない")
+	}
+	// KIF は `<` で始まらない（BOM 付きでも）。
+	for _, s := range []string{importSample, "# --- Kifu for Windows ---\n", "\ufeff開始日時：2026/07/29\n"} {
+		if looksLikeHTML([]byte(s)) {
+			t.Errorf("KIF を HTML と誤判定: %.20q", s)
+		}
+	}
+}
+
 func TestImportURLErrors(t *testing.T) {
 	lib := newTestLibrary(t)
 	ctx := context.Background()
@@ -213,10 +342,11 @@ func TestImportURLErrors(t *testing.T) {
 	defer html.Close()
 
 	cases := map[string]string{
-		"スキームなし":     "example.com/kifu.kif",
-		"file スキーム":  "file:///C:/kifu.kif",
-		"HTTP エラー":   notFound.URL,
-		"KIF ではない内容": html.URL,
+		"スキームなし":    "example.com/kifu.kif",
+		"file スキーム": "file:///C:/kifu.kif",
+		"HTTP エラー":  notFound.URL,
+		// HTML が返ってきたら .kif を辿るが、リンクが無ければエラーにする。
+		"棋譜リンクの無い HTML": html.URL,
 	}
 	for name, u := range cases {
 		t.Run(name, func(t *testing.T) {

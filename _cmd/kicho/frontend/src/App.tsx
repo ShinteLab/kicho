@@ -538,7 +538,7 @@ function ImportTab({
             className="grow"
             type="text"
             value={url}
-            placeholder="https://example.com/kifu/20241019.kif"
+            placeholder="http://live.shogi.or.jp/oui/kifu/67/oui202607290101.html"
             onChange={(e) => patch({ url: e.target.value })}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !busy && canRun) handlePreview();
@@ -579,6 +579,14 @@ function ImportTab({
           Shift_JIS の .kif も自動で判別します。他の kicho の
           <code> /kifu/&#123;id&#125; </code>
           も取り込めます。
+        </p>
+      )}
+      {mode === "url" && (
+        <p className="hint">
+          将棋連盟の棋譜中継ページ（<code>live.shogi.or.jp</code> の
+          <code> .html </code>）は、ページが読んでいる
+          <code> .kif </code>
+          を辿って取り込みます。<code>.kif</code> に貼り替える必要はありません。
         </p>
       )}
 
