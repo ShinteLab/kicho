@@ -179,11 +179,15 @@ function CopyURLButton({
 /**
  * 手数の表示。終局していれば「(終局)」を添える。
  * 対局中の棋譜は随時更新されるため、保存済みでも終局済みとは限らない。
+ *
+ * 0 手は**エラーではない**。中継は対局開始前から棋譜(ヘッダだけ)が
+ * 置かれているため、まだ指されていないという意味で「(対局前)」を添える。
  */
 function Moves({ moves, finished, endMark }: { moves: number; finished: boolean; endMark: string }) {
   return (
     <>
       {moves}
+      {moves === 0 && !finished && <span className="ended">（対局前）</span>}
       {finished && (
         <span className="ended" title={endMark}>
           （終局）

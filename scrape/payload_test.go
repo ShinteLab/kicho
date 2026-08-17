@@ -144,14 +144,38 @@ func TestParsePayloadErrors(t *testing.T) {
 		"評価できない":      `export default (function({{{);`,
 		"data が無い":    `export default ({});`,
 		"kifu が無い":    `export default ({data:{}});`,
-		"指し手が空":       `export default ({data:{kifu:{kifu:[]}}});`,
-		"指し手がメタのみ":    `export default ({data:{kifu:{kifu:[{num:0,move:null}]}}});`,
 		"kifu が配列でない": `export default ({data:{kifu:{kifu:5}}});`,
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
 			if _, err := parsePayload(src); err == nil {
 				t.Errorf("parsePayload(%q) succeeded, want error", src)
+			}
+		})
+	}
+}
+
+// 対局前は kifu が空(または開始前のメタ要素のみ)で来る。
+// **指し手が無いだけなのでエラーにしない。**
+func TestParsePayloadNoMoves(t *testing.T) {
+	cases := map[string]string{
+		"指し手が空":    `export default ({data:{kifu:{kifu:[],event:"竜王戦",player1:"A",player2:"B"}}});`,
+		"指し手がメタのみ": `export default ({data:{kifu:{kifu:[{num:0,move:null}],event:"竜王戦",player1:"A",player2:"B"}}});`,
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			g, err := parsePayload(src)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(g.Moves) != 0 {
+				t.Errorf("len(Moves) = %d, want 0", len(g.Moves))
+			}
+			if g.Event != "竜王戦" || g.Black != "A" || g.White != "B" {
+				t.Errorf("Event=%q Black=%q White=%q", g.Event, g.Black, g.White)
+			}
+			if g.Finished() {
+				t.Error("Finished() = true, want false")
 			}
 		})
 	}

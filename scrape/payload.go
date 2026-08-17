@@ -123,9 +123,9 @@ func parsePayload(src string) (g *Game, err error) {
 			Spend: time.Duration(num(vm, o, "spend")) * time.Second,
 		})
 	}
-	if len(game.Moves) == 0 {
-		return nil, fmt.Errorf("payload contains no moves")
-	}
+	// **指し手が 0 手でもエラーにしない。** 対局前(開始時刻より前)の棋譜は
+	// ヘッダだけで指し手がまだ無い。ペイロードの形は data.kifu.kifu の
+	// 存在で確かめてあるので、空配列は「まだ指されていない」という事実。
 	return game, nil
 }
 

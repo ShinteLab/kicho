@@ -143,6 +143,24 @@ func TestImportKIFAlwaysCreatesNewRecord(t *testing.T) {
 	}
 }
 
+// 対局前の棋譜(ヘッダだけで指し手が無い)も取り込める。
+// 指し手が無いのは読み取りの失敗ではなく、まだ指されていないという事実。
+func TestImportKIFWithoutMoves(t *testing.T) {
+	lib := newTestLibrary(t)
+
+	src := "棋戦：第67期王位戦\n先手：伊藤匠二冠\n後手：藤井聡太王位\n手数----指手---------消費時間--\n"
+	rec, err := lib.ImportKIF(context.Background(), src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Game.Moves != 0 {
+		t.Errorf("Moves = %d, want 0", rec.Game.Moves)
+	}
+	if rec.Game.Event != "第67期王位戦" {
+		t.Errorf("Event = %q", rec.Game.Event)
+	}
+}
+
 func TestImportKIFRejectsGarbage(t *testing.T) {
 	lib := newTestLibrary(t)
 	ctx := context.Background()

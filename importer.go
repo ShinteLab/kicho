@@ -133,6 +133,11 @@ func (l *Library) importDocument(ctx context.Context, text, source, sourceURL, e
 	if err != nil {
 		return store.Record{}, err
 	}
+	// **「指し手が 0 手」はエラーにしない**(対局前の中継棋譜は正当に存在する)。
+	// KIF かどうかはヘッダも指し手も取れなかったかどうかで判断する。
+	if doc.Empty() {
+		return store.Record{}, fmt.Errorf("KIF として読み取れませんでした")
+	}
 
 	return l.store.Save(ctx, store.Game{
 		Source: source,
