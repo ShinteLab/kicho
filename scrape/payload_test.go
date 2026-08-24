@@ -191,3 +191,25 @@ func TestParsePayloadInterruptsInfiniteLoop(t *testing.T) {
 		t.Fatal("infinite loop payload succeeded, want interrupt error")
 	}
 }
+
+// TestNormalizeMoveName は読売の "打" 二重付けを潰すことを見る。
+//
+// 第39期竜王戦挑戦者決定三番勝負第３局(6a74125e9a7091804958e73e)の 91手目が
+// `move:"７五桂打打"` で配信されている。記録係の入力ミスがそのまま出ているもので、
+// 潰さないと `91 ７五桂打打(00)` になり外部ツールがそこで止まる。
+func TestNormalizeMoveName(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"７五桂打打", "７五桂打"},
+		{"投了打打", "投了打"}, // TerminalMarker が "打" 1つを落として終局と判定できる形
+		// 正しい表記は触らない。
+		{"５五角打", "５五角打"},
+		{"７六歩", "７六歩"},
+		{"投了打", "投了打"},
+		{"同桂成", "同桂成"},
+	}
+	for _, tt := range tests {
+		if got := normalizeMoveName(tt.in); got != tt.want {
+			t.Errorf("normalizeMoveName(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}

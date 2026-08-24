@@ -114,7 +114,7 @@ func parsePayload(src string) (g *Game, err error) {
 		}
 		game.Moves = append(game.Moves, kifu.Move{
 			Num:   int(num(vm, o, "num")),
-			Name:  name,
+			Name:  normalizeMoveName(name),
 			FromX: int(num(vm, o, "fr_x")),
 			FromY: int(num(vm, o, "fr_y")),
 			// spend はその手の消費時間(秒)。読売は分単位でしか記録していないため
@@ -127,6 +127,24 @@ func parsePayload(src string) (g *Game, err error) {
 	// ヘッダだけで指し手がまだ無い。ペイロードの形は data.kifu.kifu の
 	// 存在で確かめてあるので、空配列は「まだ指されていない」という事実。
 	return game, nil
+}
+
+// normalizeMoveName は読売の指し手名の表記ミスを直す。
+//
+// 記録係の入力がそのまま配信されるため、打ちの手に "打" が二重に付いた
+// `７五桂打打` のような値が来ることがある(第39期竜王戦挑戦者決定三番勝負第３局
+// 91手目で実在)。`打打` は KIF として一意に無効な表記なので、潰しても情報は落ちない。
+// そのまま出すと `91 ７五桂打打(00)` になり、外部ツールが駒種を読めずそこで止まる。
+//
+// **ここで直すのは「原本を保持する」方針と矛盾しない。** 読売は KIF を配信しておらず、
+// 構造化データから KIF を組み立てるのは kicho 側だからで、ここが原本の生成地点にあたる。
+// ライブ経路(`/ryuoh/kifu/{id}`)は DB を通らないので、DB 側で直しても対局中は直らない。
+func normalizeMoveName(name string) string {
+	name = strings.TrimSpace(name)
+	for strings.HasSuffix(name, "打打") {
+		name = strings.TrimSuffix(name, "打")
+	}
+	return name
 }
 
 // prop はオブジェクトのプロパティをオブジェクトとして取り出す(無ければ nil)。
