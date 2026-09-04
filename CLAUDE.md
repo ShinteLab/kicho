@@ -9,6 +9,29 @@ kicho（棋帳）。棋譜を取得して保存し、外部ツールへ HTTP で
 > **`core/web/kifu.js`（KIF 形式の変換ロジック）と `/ryuoh/kifu/{id}`（棋譜の URL）は
 > 改名対象ではない**ので、そのまま `kifu` を使う。
 
+## ⚠️ `ikkyoku` がライブラリとして使っている（2026-09-04）
+
+**`ikkyoku`（一局。ユーザ環境で動く将棋ソフト）が `kicho.Library` を直接 import し、
+棋譜の取得・登録・蔵書の UI をあちらへ移した。** ユーザが ikkyoku と kicho の
+2 つを立ち上げずに済むようにするため。
+
+**棋譜データベースとしての実装はこちらのまま**で、ikkyoku は利用する側。
+**このリポジトリの UI は将来「テスト用のモック」または
+「ikkyoku 以外の将棋ソフトからの読み込み口」になる。**
+
+- ikkyoku が使うのは `kicho.Open(dbPath, logger)` と `Library` のメソッド、
+  それに `scrape` の部品（`DecodeKIF` / `ReadLimited` / `LooksLikeHTML` /
+  `KifURLFromHTML`）。**この移行のために kicho 側は 1 行も変えていない**
+- ⚠️ **公開 API を変えるときは ikkyoku 側も直すこと**（`_cmd/ikkyoku/kifuservice.go`
+  が `_cmd/kicho/kifuservice.go` の移植で、`store.Game` / `store.Query` /
+  `store.Source*` をそのまま使っている）
+- ⚠️ **DB は別の場所が既定。** ikkyoku は `%APPDATA%\ikkyoku\kicho.db`、
+  kicho は `%APPDATA%\kicho\kicho.db`。**同じ SQLite を 2 プロセスから書くと
+  `database is locked` になりうる**ので、共用は ikkyoku の設定で明示したときだけ
+- ⚠️ **`ServerService`（HTTP 配信）は移していない。** ikkyoku はサーバを持たず、
+  「棋譜 URL をコピー」の代わりに「解析する」を置いている。**外部ツール
+  （ShogiHome 等）へ配るのは今のところこちらの役目**
+
 ## 構成
 
 Wails 依存を `_cmd/kicho/` に閉じ込め、ロジックは親モジュール `github.com/ShinteLab/kicho` 側の
@@ -529,8 +552,13 @@ KIF に載せるなら `*` 行。`num:0` のコメント（対局前の記述）
 - **連盟は棋戦を絞っていない。** ID は中継のパスなので、王位戦以外でも
   中継ページの URL さえ貼れば取れるはず（`oui` 以外は未確認）。
 - **盤面表示は未実装。** kicho が持つのは KIF（漢字表記）で、`@shinte/web` の
-  `<shogi-board>` は SFEN 入力。KIF/KI2 の漢字表記 → USI 変換は合法手生成による
-  曖昧性解決が必要で、そのロジックは Go の `engine` 側にある（`core/web/README.md` 参照）。
-  盤表示をやるなら engine 経由の変換を先に用意すること。
+  `<shogi-board>` は SFEN 入力。
+  ⚠️ **「engine が要る」という以前の記述は古い**（2026-09-04 に訂正）。
+  **`core/kifu` に KIF → USI/SFEN の変換が既に入っている**
+  （`StartSFEN` / `DecodeMoves`。**KIF は移動元座標を持つので盤が要らない**）。
+  逆方向（USI → 日本語表記）も `NewNotation` / `FormatMoves` にある。
+  実際 `ikkyoku` はこれだけで棋譜を読んで盤に出している。
+  ⚠️ **engine が要るのは KI2**（移動元を書かないので合法手生成で曖昧性を解く）。
+  そちらの変換は `kicho/format` 側に置くこと。
 - 消費時間（`spend` / `remainingtime_p1`）は保存していない。KIF の消費時間欄も空。
 - 認証なし。LAN 公開は自己責任。
