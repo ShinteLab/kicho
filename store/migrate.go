@@ -9,12 +9,21 @@ import (
 //
 // 版は PRAGMA user_version で管理する。v1 より前の DB には user_version が
 // 無い(=0)ため、games テーブルの形を見て「新規」か「旧スキーマ」かを判定する。
+//
+// **自分より新しい版の DB は開かない**(ErrSchemaTooNew)。kicho と ikkyoku は
+// 別バイナリなので、片方だけ更新した状態で同じ DB を指すと版が食い違いうる。
+// 黙って開くと後段のクエリが `no such column` で落ち、原因が分からなくなる。
 func migrate(db *sql.DB) error {
 	var version int
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
-	if version >= schemaVersion {
+	if version > schemaVersion {
+		return fmt.Errorf("%w: この棋譜データベースは新しい版(v%d)で作られています。"+
+			"扱えるのは v%d までです。プログラムを更新してください",
+			ErrSchemaTooNew, version, schemaVersion)
+	}
+	if version == schemaVersion {
 		return nil
 	}
 

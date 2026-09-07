@@ -26,8 +26,10 @@ kicho（棋帳）。棋譜を取得して保存し、外部ツールへ HTTP で
   が `_cmd/kicho/kifuservice.go` の移植で、`store.Game` / `store.Query` /
   `store.Source*` をそのまま使っている）
 - ⚠️ **DB は別の場所が既定。** ikkyoku は `%APPDATA%\ikkyoku\kicho.db`、
-  kicho は `%APPDATA%\kicho\kicho.db`。**同じ SQLite を 2 プロセスから書くと
-  `database is locked` になりうる**ので、共用は ikkyoku の設定で明示したときだけ
+  kicho は `%APPDATA%\kicho\kicho.db`。共用は ikkyoku の設定で明示したときだけ。
+  ikkyoku の設定にはファイルピッカーがあるので**ユーザは実際に共用できてしまう**。
+  そのため WAL + `busy_timeout` を入れて共用に耐えるようにした（「接続設定」を参照）が、
+  **共用を推奨する状態ではない**（別々の DB が既定なのは変えていない）
 - ⚠️ **`ServerService`（HTTP 配信）は移していない。** ikkyoku はサーバを持たず、
   「棋譜 URL をコピー」の代わりに「解析する」を置いている。**外部ツール
   （ShogiHome 等）へ配るのは今のところこちらの役目**
@@ -101,11 +103,32 @@ prokishi 側も同じ理由でコメントアウトしてある。
 
 `os.UserConfigDir()/kicho/` に置く（Windows なら `%APPDATA%\kicho\`）。
 
-- `kicho.db` — 棋譜 DB（SQLite）
+- `kicho.db` — 棋譜 DB（SQLite）。**WAL なので `kicho.db-wal` / `kicho.db-shm` が並ぶ**
 - `settings.json` — bind アドレス・ポート・自動起動
 
 DB ドライバは **PureGo の `modernc.org/sqlite`**。cgo 不要でクロスコンパイルが通る。
 `mattn/go-sqlite3` に置き換えないこと。
+
+### 接続設定（`store.dsn`）
+
+**PRAGMA は DSN に載せる。`Open` で1回 `Exec` する形に戻さないこと。**
+PRAGMA は接続ごとの設定で、`database/sql` は接続が壊れれば黙って張り直すため、
+1回きりの `Exec` だとそのとき既定へ戻る（`foreign_keys` が OFF に戻ると
+`Delete` しても `game_kifu` に本文が残り、誰も気づかない）。
+
+| PRAGMA | 理由 |
+|---|---|
+| `busy_timeout(5000)` | 既定 0 は待たずに `database is locked`。ikkyoku との共用があるので待たせる |
+| `journal_mode(WAL)` | 読みが書きをブロックしない。DB ファイルに永続する設定 |
+| `foreign_keys(1)` | `game_kifu` の `ON DELETE CASCADE`（既定は OFF） |
+
+⚠️ **パスに `file:` を付けないこと。** 付けると `SQLITE_OPEN_URI` で URI として
+解釈され、Windows のパス（`D:\...`）やスペース・`#` を含むパスが壊れる。
+付けなければドライバは最初の `?` より前をパスとしてそのまま渡す
+（`store/open_test.go` の `TestOpenHandlesAwkwardPath` で固定）。
+
+接続は `SetMaxOpenConns(1)` で1本に絞ってある。同一プロセス内の書き込みはこれで
+直列化され、プロセスをまたぐ競合は上の WAL と busy_timeout が受け持つ。
 
 ### スキーマ
 
@@ -141,6 +164,11 @@ kicho 自前の `id` と `created_at` は維持されたまま内容だけ更新
 - v1 より前の DB は `user_version` が 0 なので、`games` の形
   （`kif` 列の有無）で「新規」「旧スキーマ」を判定している
 - 移行は1トランザクション。失敗すれば元の `games` が残る
+- **自分より新しい版の DB は開かない**（`store.ErrSchemaTooNew`）。
+  kicho と ikkyoku は別バイナリなので、片方だけ更新した状態で同じ DB を
+  指すと版が食い違いうる。黙って開くと後段が `no such column` で落ちて
+  原因が分からなくなるため、`Open` の時点で理由を返す。
+  ⚠️ **`version >= schemaVersion` で早期 return する形に戻さないこと**
 
 時刻の変換は SQLite の `strftime('%s', ...)` で行う。RFC3339 のオフセット付き
 文字列も正しく解釈され、Go の `time.Parse` と一致することを確認済み。

@@ -23,6 +23,11 @@ import (
 // ErrNotFound は該当する棋譜が無いことを表す。
 var ErrNotFound = errors.New("kicho: game not found")
 
+// ErrSchemaTooNew は DB のスキーマ版がこのプログラムより新しいことを表す。
+// Open が返す。呼び出し側(ikkyoku など)が「更新してください」と案内するために
+// 文言比較ではなく errors.Is で判定できるようにしてある。
+var ErrSchemaTooNew = errors.New("kicho: database schema is newer than this build")
+
 // 棋譜の取得元。
 const (
 	// SourceYomiuri は読売サイトからのスクレイピング。SourceID は読売の棋譜 ID で、
@@ -88,24 +93,41 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("create data dir: %w", err)
 		}
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite %s: %w", path, err)
 	}
-	// modernc の SQLite は単一接続に絞ると database is locked を避けやすい。
-	// 接続が1本なので PRAGMA も1回で足りる。
+	// 接続は1本に絞る。同一プロセス内の書き込みはこれで直列化される
+	// (プロセスをまたぐ競合は WAL と busy_timeout が受け持つ。dsn を参照)。
 	db.SetMaxOpenConns(1)
 
-	// game_kifu の ON DELETE CASCADE を効かせる(既定は OFF)。
-	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("enable foreign keys: %w", err)
-	}
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return &Store{db: db}, nil
+}
+
+// dsn は接続文字列を組み立てる。
+//
+// ⚠️ **PRAGMA は接続ごとの設定なので、Open で1回 Exec するだけでは足りない。**
+// database/sql は接続が壊れれば黙って張り直すため、そのとき設定が既定へ戻る
+// (特に foreign_keys が OFF に戻ると Delete しても game_kifu に本文が残る)。
+// DSN に載せておけば modernc.org/sqlite が接続を張るたびに適用する。
+//
+//   - busy_timeout … 既定は 0 で、ロックに当たると待たずに database is locked。
+//     kicho と ikkyoku が同じ DB を開く運用があるので待たせる
+//   - journal_mode(WAL) … 読みが書きをブロックしない。DB ファイルに永続する設定で、
+//     隣に -wal / -shm が並ぶ
+//   - foreign_keys … game_kifu の ON DELETE CASCADE を効かせる(既定は OFF)
+//
+// パスに `file:` を付けないのが要点。付けると SQLITE_OPEN_URI で URI として
+// 解釈され、Windows のパス(`D:\...`)やスペースを含むパスが壊れる。
+// 付けなければドライバは最初の `?` より前をパスとしてそのまま渡す。
+func dsn(path string) string {
+	return path + "?_pragma=busy_timeout(5000)" +
+		"&_pragma=journal_mode(WAL)" +
+		"&_pragma=foreign_keys(1)"
 }
 
 // Close は DB を閉じる。
