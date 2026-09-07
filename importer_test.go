@@ -134,7 +134,7 @@ func TestImportKIFAlwaysCreatesNewRecord(t *testing.T) {
 	if first.ID == second.ID {
 		t.Error("同じ ID になっている（毎回新規登録のはず）")
 	}
-	n, err := lib.Store().Count(ctx)
+	n, err := lib.Count(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,9 +375,9 @@ func TestImportURLRoundTripThroughOwnServer(t *testing.T) {
 		},
 	}.String()
 
-	saved, err := lib.Store().Save(ctx, store.Game{
+	saved, err := lib.Save(ctx, Fetched{
 		Source: store.SourceYomiuri, SourceID: "orig",
-		Event: "第37期竜王戦七番勝負第２局", Moves: 4, EndMark: "投了", Body: origKIF,
+		Event: "第37期竜王戦七番勝負第２局", Moves: 4, EndMark: "投了", KIF: origKIF,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -429,11 +429,11 @@ func TestImportedGameIsSearchable(t *testing.T) {
 	if _, err := lib.ImportKIF(ctx, importSample); err != nil {
 		t.Fatal(err)
 	}
-	got, err := lib.Store().Search(ctx, store.Query{Text: "テスト棋戦"})
+	got, err := lib.Search(ctx, store.Query{Text: "テスト棋戦"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 {
-		t.Errorf("検索できない: %d件", len(got))
+	if len(got.Games) != 1 {
+		t.Errorf("検索できない: %d件", len(got.Games))
 	}
 }

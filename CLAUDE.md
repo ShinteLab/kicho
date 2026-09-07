@@ -21,10 +21,12 @@ kicho（棋帳）。棋譜を取得して保存し、外部ツールへ HTTP で
 
 - ikkyoku が使うのは `kicho.Open(dbPath, logger)` と `Library` のメソッド、
   それに `scrape` の部品（`DecodeKIF` / `ReadLimited` / `LooksLikeHTML` /
-  `KifURLFromHTML`）。**この移行のために kicho 側は 1 行も変えていない**
-- ⚠️ **公開 API を変えるときは ikkyoku 側も直すこと**（`_cmd/ikkyoku/kifuservice.go`
-  が `_cmd/kicho/kifuservice.go` の移植で、`store.Game` / `store.Query` /
-  `store.Source*` をそのまま使っている）
+  `KifURLFromHTML`）
+- ⚠️ **公開 API を変えるときは ikkyoku 側も直すこと**（`ikkyoku/app/kifuservice.go`
+  が `_cmd/kicho/kifuservice.go` の移植）。**壊したことに気づくために
+  `.\check-consumers.ps1` を置いてある**（後述）。`go build ./...` を
+  kicho で通しても ikkyoku はコンパイルされない
+- ⚠️ **`Store()` は公開していない。** 蔵書の操作は `Library` のメソッドを使う（後述）
 - ⚠️ **DB は別の場所が既定。** ikkyoku は `%APPDATA%\ikkyoku\kicho.db`、
   kicho は `%APPDATA%\kicho\kicho.db`。共用は ikkyoku の設定で明示したときだけ。
   ikkyoku の設定にはファイルピッカーがあるので**ユーザは実際に共用できてしまう**。
@@ -59,11 +61,86 @@ _cmd/kicho/services  →  github.com/ShinteLab/kicho  →  scrape / store / http
 
 `internal/` 相当のロジックに `github.com/wailsapp/wails/v3` を import しないこと。
 
+### 公開 API は `Library` に集める（重要）
+
+**`Library.Store()` は無い。** 以前は `*store.Store` をそのまま返していて、
+kicho の Wails サービスも ikkyoku も蔵書操作をそこから直接呼んでいた。
+その結果、
+
+- 実質の公開 API が `store` パッケージ全体になった
+- **保存の組み立てが呼び出し側に散った** —— 取得元ごとの `source_url` の決め方、
+  文字コードの既定、手数の数え方を kicho と ikkyoku が**それぞれ持っていた**。
+  片方だけ直せば黙って挙動が割れる（実際、kicho 側だけ読売の `source_url` を
+  入れ忘れていた）
+
+**蔵書の操作も取得元の知識も `Library` に足すこと。** 使う側に書かない。
+
+| 口 | 用途 |
+|---|---|
+| `Fetch(ctx, input)` | ライブ中継から取得。**取得元の判別もここ**（`live.shogi.or.jp` か否か） |
+| `Refresh(ctx, source, sourceID)` | 取得済みを取り直す。取得元が分かっているので往復が無い |
+| `PreviewKIF(text)` / `PreviewURL(ctx, url)` | 取り込み前の確認（保存しない） |
+| `ImportKIF(ctx, text)` / `ImportURL(ctx, url)` | 取り込んで保存（毎回新規登録） |
+| `Save(ctx, Fetched)` | 取得済みを保存。**`source_url` と手数はここが決め直す** |
+| `Count` / `Search` / `Get` / `Delete` | 蔵書 |
+| `RefetchableURL(source, url)` | その `source_url` を取りに行けば同じ棋譜が取れるか |
+
+`Fetched` が取得結果の共通形で、**取得元が違っても同じ形**になる
+（読売＝構造化データから組み立て／連盟＝配信されている `.kif` が原本、の違いは
+`Fetch` の内側で吸収する）。フロントへ渡す DTO はこれを写すだけにする。
+
+#### `Save` は画面の値を全部は信じない
+
+`Fetched` は UI を往復してくるので、**`source_url` は取得元から決め直し、
+手数は本文から数え直す**（どちらも派生値で、「原本をそのまま保存する」対象ではない）。
+棋戦名・対局者・終局種別は画面の値を使う —— 読売はペイロードが一次情報で、
+自分が組み立てた KIF を読み直すより確かなため。
+
+#### 一覧は件数無制限にしない
+
+`Library.Search` は `MaxSearchRows`（500）で切り、`SearchResult` で
+「該当 N 件・全体 M 件・切ったかどうか」を返す。**棋譜を溜め込んでいく前提**なので、
+上限が無いと蔵書が増えたぶんだけ全行が JSON に載る。
+
+- `store.Search` の `Limit 0` は**無制限のまま**。切るのはアプリの一覧だけで、
+  `httpapi` の `GET /kifu` は外部ツールが全件を期待するので通さない
+- 該当件数は `store.CountQuery` が数える。**`Search` と `whereClause` を共有**
+  しているので、条件を片方にだけ足すと「N 件中 M 件」が嘘になる
+
+#### エラーは sentinel で見分けられるようにする
+
+`ErrNoInput` / `ErrEmptyKifu` / `ErrNotKifu` / `ErrUnsupportedSource`（`errors.go`）と
+`store.ErrNotFound` / `store.ErrSchemaTooNew`。**画面と文言は使う側にある**ので、
+種類で分岐できないと `strings.Contains` になる。判定は `errors.Is`。
+
+⚠️ **「手数 0」は `ErrNotKifu` ではない**（対局前の中継棋譜は正当に存在する）。
+
+### 使う側が壊れていないかを見る（`check-consumers.ps1`）
+
+`go build ./...` を kicho で通しても ikkyoku はコンパイルされない。
+公開 API を変えたら `.\check-consumers.ps1` を流すこと。2 つを見る。
+
+1. **replace の取りこぼし** —— Go は**メインモジュール以外の replace を読まない**。
+   kicho が相対 replace で引く依存（今は `core`）は、ikkyoku 側の
+   **2 つの go.mod 両方**に同じ replace が要る。kicho に依存を足すたびに発生する
+2. **使う側のビルド** —— 一時的な `go.work` を作り、**この作業ツリーの kicho** を
+   `replace` で使わせて `go build` / `go vet` を流す。ikkyoku の replace は
+   `../kicho`（メインのチェックアウト）を指すので、worktree の変更は届かないため
+
+⚠️ **go.work は replace より優先される**ので、2 が通っても 1 は検出できない（別に見ている）。
+⚠️ **go.work を手で書かないこと。** Windows のパスは go.work の構文でそのままは書けない
+（`/` 区切りだと `use` として認識されず、`\` はクォートすると invalid quoted string）。
+`go work init` / `go work use` / `go work edit` に書かせる。
+
 ## コマンド
 
 ```powershell
 # ロジック側（kicho/ から。_cmd 配下は go build ./... の対象外）
 go test ./...
+
+# 使う側（ikkyoku）が壊れていないか。公開 API を変えたら必ず流す
+.\check-consumers.ps1
+.\check-consumers.ps1 -Test          # go test まで流す
 
 # Wails アプリ（_cmd/kicho で実行）
 cd kicho/_cmd/kicho
@@ -178,7 +255,13 @@ kicho 自前の `id` と `created_at` は維持されたまま内容だけ更新
 ### 検索
 
 `store.Search(ctx, Query)` — 棋戦名・対局者・場所の部分一致、開始日の範囲、
-終局済みのみ、件数制限。KIF 本文は返さない。
+終局済みのみ、件数制限。KIF 本文は返さない。件数は `store.CountQuery(ctx, Query)`。
+
+**条件の組み立ては `whereClause` に 1 か所だけ置く。** `Search` と `CountQuery` が
+共有していて、片方にだけ条件を足すと UI の「N 件中 M 件」が嘘になる。
+
+アプリの一覧は `store.Search` を直接呼ばず `kicho.Library.Search` を通す
+（上限が掛かり、件数も一緒に返る。「公開 API は `Library` に集める」を参照）。
 
 **trigram は 3 文字以上でないと索引が効かない**（実測: `"竜王戦"` は一致、
 `"決勝"` は不一致）。そのため 3 文字未満は `LIKE` へフォールバックする

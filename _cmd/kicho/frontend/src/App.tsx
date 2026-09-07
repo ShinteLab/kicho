@@ -678,7 +678,11 @@ function ImportTab({
  */
 function LibraryTab({ revision }: { revision: number }) {
   const [games, setGames] = useState<GameSummary[]>([]);
+  // matched は条件に合う件数（上限で切る前）、total は棚全体の件数。
+  const [matched, setMatched] = useState(0);
   const [total, setTotal] = useState(0);
+  const [truncated, setTruncated] = useState(false);
+  const [limit, setLimit] = useState(0);
   const [selected, setSelected] = useState<GameDetail | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -689,17 +693,20 @@ function LibraryTab({ revision }: { revision: number }) {
   const [to, setTo] = useState("");
   const [finishedOnly, setFinishedOnly] = useState(false);
 
+  // 件数は Search が一緒に返す。
+  // ⚠️ **Count を別に呼ばないこと。** 条件付きの該当件数（matched）は
+  // 検索と同じ条件で数える必要があり、Go 側で同じ WHERE を共有している。
   const search = useCallback(
     async (q: { text: string; from: string; to: string; finishedOnly: boolean }) => {
       setLoading(true);
       setError("");
       try {
-        const [list, n] = await Promise.all([
-          KifuService.Search({ ...q, limit: 0 }),
-          KifuService.Count(),
-        ]);
-        setGames(list ?? []);
-        setTotal(n);
+        const res = await KifuService.Search({ ...q, limit: 0, offset: 0 });
+        setGames(res.games ?? []);
+        setMatched(res.matched);
+        setTotal(res.total);
+        setTruncated(res.truncated);
+        setLimit(res.limit);
       } catch (e) {
         setError(errorMessage(e));
       } finally {
@@ -756,7 +763,7 @@ function LibraryTab({ revision }: { revision: number }) {
     <section>
       <div className="row space-between">
         <h2>
-          棋譜一覧（{games.length}
+          棋譜一覧（{hasConditions ? matched : total}
           {hasConditions && total > 0 && ` / ${total}`}）
         </h2>
         <button onClick={reload} disabled={loading}>
@@ -802,6 +809,12 @@ function LibraryTab({ revision }: { revision: number }) {
       {shortText && (
         <p className="hint">
           検索語が 3 文字未満です。索引が使えないため全件を走査します（件数が増えると遅くなります）。
+        </p>
+      )}
+
+      {truncated && (
+        <p className="notice">
+          該当 {matched} 件のうち新しい {limit} 件だけを表示しています。条件で絞り込んでください。
         </p>
       )}
 

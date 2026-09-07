@@ -126,17 +126,9 @@ func ParseKIF(text string) (kifu.Document, error) {
 // 解析結果（棋戦名・対局者・日付・手数・終局）は一覧と検索のために使うだけで、
 // 本文は整形し直さない。整形すると変化・コメント・不成などの情報が落ちるため。
 func (l *Library) importDocument(ctx context.Context, text, source, sourceURL, encoding string) (store.Record, error) {
-	if strings.TrimSpace(text) == "" {
-		return store.Record{}, fmt.Errorf("棋譜が空です")
-	}
-	doc, err := kifu.Parse(text)
+	doc, err := parseImportable(text)
 	if err != nil {
 		return store.Record{}, err
-	}
-	// **「指し手が 0 手」はエラーにしない**(対局前の中継棋譜は正当に存在する)。
-	// KIF かどうかはヘッダも指し手も取れなかったかどうかで判断する。
-	if doc.Empty() {
-		return store.Record{}, fmt.Errorf("KIF として読み取れませんでした")
 	}
 
 	return l.store.Save(ctx, store.Game{

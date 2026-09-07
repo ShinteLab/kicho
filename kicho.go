@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/ShinteLab/kicho/format"
 	"github.com/ShinteLab/kicho/httpapi"
@@ -63,71 +64,150 @@ func (l *Library) Close(ctx context.Context) error {
 // Server は HTTP サーバを返す(起動・停止用)。
 func (l *Library) Server() *httpapi.Server { return l.server }
 
-// Store は棋譜 DB を返す。
-func (l *Library) Store() *store.Store { return l.store }
-
-// KifuIDFromURL は棋譜ビューアの URL(`.../kifu/s/{id}/`)から ID を取り出す。
-// 対局ページ URL には使えない(そちらは ResolveRyuohURL)。
-func KifuIDFromURL(raw string) (string, error) {
-	return scrape.KifuIDFromViewerURL(raw)
-}
-
-// ResolveRyuohURL は読売の対局ページ URL から棋譜 ID を取り出す。
-func (l *Library) ResolveRyuohURL(ctx context.Context, pageURL string) (string, error) {
-	return l.yomiuri.FetchKifuID(ctx, pageURL)
-}
-
-// FetchRyuoh は棋譜 ID から取得する(保存はしない。プレビュー用)。
-func (l *Library) FetchRyuoh(ctx context.Context, id string) (*scrape.Game, error) {
-	return l.yomiuri.FetchGame(ctx, id)
-}
-
-// ResolveShogiLiveInput は連盟の中継ページ URL / .kif の URL / 棋譜 ID を
-// 中継の棋譜 ID に解決する。
-func (l *Library) ResolveShogiLiveInput(ctx context.Context, input string) (string, error) {
-	return l.shogilive.ResolveID(ctx, input)
-}
-
-// FetchShogiLive は連盟の中継から棋譜 ID で取得する(保存はしない。プレビュー用)。
-// 返る KIF はサイトが配信している原本(文字コードだけ UTF-8 に寄せたもの)。
-func (l *Library) FetchShogiLive(ctx context.Context, id string) (*scrape.LiveKifu, error) {
-	return l.shogilive.FetchGame(ctx, id)
-}
-
-// ShogiLiveViewerURL は中継ページ(HTML)の URL を組み立てる(保存時の諸元用)。
-// 人が開いて確認するのは .kif ではなくこちら。
-func (l *Library) ShogiLiveViewerURL(id string) string { return l.shogilive.ViewerURL(id) }
-
-// Save は取得済みの棋譜を保存する。
+// 蔵書（保存済みの棋譜）を触る口。
 //
-// 取得と保存は分けてある。対局中の棋譜は随時更新されるため、
+// ⚠️ **`Store()` は公開していない。** 以前は `*store.Store` をそのまま返しており、
+// kicho の Wails サービスも ikkyoku も蔵書操作をそこから直接呼んでいた。
+// 実質の公開 API が `store` パッケージ全体になり、保存の組み立て（取得元ごとの
+// source_url、文字コードの既定、手数の数え方）が呼び出し側に散った。
+// **蔵書の操作はここに足すこと。**
+
+// Count は保存件数を返す。
+func (l *Library) Count(ctx context.Context) (int, error) {
+	return l.store.Count(ctx)
+}
+
+// Get は棋譜1件を KIF 本文つきで返す。無ければ store.ErrNotFound。
+func (l *Library) Get(ctx context.Context, id string) (store.Record, error) {
+	return l.store.Get(ctx, id)
+}
+
+// Delete は棋譜を削除する。無ければ store.ErrNotFound。
+func (l *Library) Delete(ctx context.Context, id string) error {
+	return l.store.Delete(ctx, id)
+}
+
+// MaxSearchRows は Search が1回に返す上限。
+//
+// **棋譜を溜め込んでいく前提**なので、UI の一覧が件数無制限だと蔵書が増えた
+// ぶんだけ全行が JSON に載る。`store.Search` の Limit 0（無制限）をアプリの
+// 一覧にそのまま使わせないための蓋で、超えた分は SearchResult.Truncated で伝える。
+//
+// httpapi の一覧（`GET /kifu`）はここを通らない。外部ツールは全件を期待するため。
+const MaxSearchRows = 500
+
+// SearchResult は検索結果と件数。
+//
+// **件数を2つ返すのは UI が「N 件中 M 件」を出すため。** 検索のたびに
+// 呼び出し側が Search と Count を別々に投げると、条件付きの該当件数が
+// 取れず「絞り込んだ結果が全体の何件か」を出せない。
+type SearchResult struct {
+	// Games は条件に合う棋譜（新しい順、KIF 本文なし）。
+	Games []store.Record
+	// Matched は条件に合う件数（MaxSearchRows で切る前）。
+	Matched int
+	// Total は蔵書全体の件数（条件なし）。
+	Total int
+	// Truncated は上限で切ったかどうか。UI はここで「先頭 N 件」と出す。
+	Truncated bool
+}
+
+// Search は条件に合う棋譜を新しい順に返す（KIF 本文は含まない）。
+//
+// Limit が 0 か MaxSearchRows を超えていれば MaxSearchRows に丸める。
+func (l *Library) Search(ctx context.Context, q store.Query) (SearchResult, error) {
+	if q.Limit <= 0 || q.Limit > MaxSearchRows {
+		q.Limit = MaxSearchRows
+	}
+
+	games, err := l.store.Search(ctx, q)
+	if err != nil {
+		return SearchResult{}, err
+	}
+	matched, err := l.store.CountQuery(ctx, q)
+	if err != nil {
+		return SearchResult{}, err
+	}
+	total, err := l.store.Count(ctx)
+	if err != nil {
+		return SearchResult{}, err
+	}
+	return SearchResult{
+		Games:     games,
+		Matched:   matched,
+		Total:     total,
+		Truncated: matched > q.Offset+len(games),
+	}, nil
+}
+
+// Save は取得済みの棋譜（画面に出している内容）を保存する。
+//
+// **取得と保存は分けてある。** 対局中の棋譜は随時更新されるため、
 // 「取得 → 内容を確認 → その表示内容を保存」という流れにしたいのと、
 // 保存のたびにサイトへ取りに行かないようにするため
-// (取得は /ryuoh/kifu のライブ経路、DB は終局後のアーカイブという役割分担)。
+// （取得は /ryuoh/kifu のライブ経路、DB は終局後のアーカイブという役割分担）。
+// **ここからサイトへは取りに行かない。**
 //
-// 同じ棋譜を保存し直しても重複せず、既存の ID を維持したまま内容が更新される。
-// 対局中に保存したものを終局後に取り直して保存すれば、同じ ID のまま最新になる。
-func (l *Library) Save(ctx context.Context, g *scrape.Game) (store.Record, error) {
-	if g == nil {
-		return store.Record{}, fmt.Errorf("kicho: game is nil")
+// 同じ棋譜を保存し直しても重複せず、既存の ID と created_at を維持したまま
+// 内容が更新される。対局中に保存したものを終局後に取り直して保存すれば、
+// 同じ ID のまま最新になる。
+//
+// ⚠️ **諸元（source_url）は取得元から決め直す。** Fetched は UI を往復して
+// くるので、画面が持っている値をそのまま信じない。
+func (l *Library) Save(ctx context.Context, f Fetched) (store.Record, error) {
+	if strings.TrimSpace(f.SourceID) == "" {
+		return store.Record{}, fmt.Errorf("%w: 取得元の棋譜 ID が空です", ErrNoInput)
 	}
-	return l.store.Save(ctx, store.Game{
-		Source:   store.SourceYomiuri,
-		SourceID: g.SourceID,
-		// 諸元: どこから取ったか。読売は棋譜ビューアの URL。
-		SourceURL: scrape.ViewerURL(g.SourceID),
-		Event:     g.Event,
-		Handicap:  g.Handicap,
-		Place:     g.Place,
-		Black:     g.Black,
-		White:     g.White,
-		StartedAt: g.StartedAt,
-		EndMark:   g.EndMark,
-		Moves:     len(g.Moves),
+	if f.Empty() {
+		return store.Record{}, ErrEmptyKifu
+	}
 
-		// スクレイピングは構造化データから組み立てるので、これ自体が原本。
-		Body:     g.KIF(),
-		Format:   string(format.KIF),
-		Encoding: EncodingUTF8,
+	source, sourceURL := f.Source, f.SourceURL
+	switch source {
+	case store.SourceShogiLive:
+		sourceURL = l.shogilive.ViewerURL(f.SourceID)
+	case store.SourceYomiuri, "":
+		// 取得元が入っていない古い画面状態でも読売として保存できるようにしておく。
+		source = store.SourceYomiuri
+		sourceURL = scrape.ViewerURL(f.SourceID)
+	case store.SourceURL, store.SourcePaste:
+		// 取り込み系は貼られた URL をそのまま残す（貼り付けは空）。
+	default:
+		return store.Record{}, fmt.Errorf("%w: %s", ErrUnsupportedSource, source)
+	}
+
+	kifFormat := f.Format
+	if kifFormat == "" {
+		kifFormat = string(format.KIF)
+	}
+	encoding := f.Encoding
+	if encoding == "" {
+		encoding = EncodingUTF8
+	}
+
+	// 手数は本文から数え直す。**画面が持っている値を信じない**
+	// （Fetched は UI を往復してくる。手数は本文から決まる派生値であって
+	// 「原本をそのまま保存する」対象ではない）。
+	moves := f.Moves
+	if kifFormat == string(format.KIF) {
+		moves = countMoves(f.KIF)
+	}
+
+	return l.store.Save(ctx, store.Game{
+		Source:    source,
+		SourceID:  f.SourceID,
+		SourceURL: sourceURL,
+		Event:     f.Event,
+		Handicap:  f.Handicap,
+		Place:     f.Place,
+		Black:     f.Black,
+		White:     f.White,
+		StartedAt: f.StartedAt,
+		EndMark:   f.EndMark,
+		Moves:     moves,
+
+		Body:     f.KIF,
+		Format:   kifFormat,
+		Encoding: encoding,
 	})
 }

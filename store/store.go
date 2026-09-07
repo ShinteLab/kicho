@@ -395,15 +395,16 @@ func escapeLike(s string) string {
 	return r.Replace(s)
 }
 
-// Search は条件に合う棋譜をメタデータのみ(KIF 本文なし)で新しい順に返す。
-func (s *Store) Search(ctx context.Context, q Query) ([]Record, error) {
+// whereClause は Query を FROM 以降の SQL とプレースホルダの値に落とす。
+//
+// **Search と CountQuery で共有する。** 片方だけ条件を足すと
+// 「一覧に出る件数」と「該当件数」が食い違い、UI の「N 件中 M 件」が嘘になる。
+func whereClause(q Query) (sql string, args []any) {
 	var (
 		sb    strings.Builder
-		args  []any
 		where []string
 	)
-
-	sb.WriteString(`SELECT ` + metaColumns + ` FROM games g`)
+	sb.WriteString(` FROM games g`)
 
 	text := strings.TrimSpace(q.Text)
 	if text != "" {
@@ -438,6 +439,32 @@ func (s *Store) Search(ctx context.Context, q Query) ([]Record, error) {
 		sb.WriteString(` WHERE `)
 		sb.WriteString(strings.Join(where, ` AND `))
 	}
+	return sb.String(), args
+}
+
+// CountQuery は条件に合う棋譜の件数を返す(Limit / Offset は無視する)。
+//
+// Search を Limit で切ったときに「全 N 件中 M 件」を出すために使う。
+func (s *Store) CountQuery(ctx context.Context, q Query) (int, error) {
+	from, args := whereClause(q)
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*)`+from, args...).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count matching games: %w", err)
+	}
+	return n, nil
+}
+
+// Search は条件に合う棋譜をメタデータのみ(KIF 本文なし)で新しい順に返す。
+//
+// **Limit 0 は無制限**。件数を絞るのは呼び出し側の責任で、
+// アプリの一覧は kicho.Library.Search が上限を掛ける
+// (httpapi の一覧は外部ツールが全件を期待するのでここで切らない)。
+func (s *Store) Search(ctx context.Context, q Query) ([]Record, error) {
+	from, args := whereClause(q)
+
+	var sb strings.Builder
+	sb.WriteString(`SELECT ` + metaColumns)
+	sb.WriteString(from)
 	sb.WriteString(orderNewestFirst)
 
 	if q.Limit > 0 {
