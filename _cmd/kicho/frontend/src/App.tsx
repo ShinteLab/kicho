@@ -7,6 +7,50 @@ import "./app.css";
 type Tab = "fetch" | "import" | "library" | "server";
 
 /**
+ * 取得タブのカード1枚。取得するたびに増える。
+ *
+ * 複数対局を並行して追える（第1局を取ったまま第2局を取れる）ようにするため、
+ * 取得結果は1件だけ持つのではなくカードの配列として持つ。
+ */
+type FetchCard = {
+  /**
+   * カードの識別子。「取得元 + その棋譜 ID」。
+   * 対局中の棋譜を取り直したときにカードが増えず、同じカードが最新化される。
+   *
+   * 取得元を含めるのは、棋譜 ID の形が取得元ごとに違うため
+   * （読売は 24 桁の ID、連盟は中継のパス）。保存側が
+   * `(source, source_id)` で同一性を見るのと同じ粒度にしてある。
+   */
+  key: string;
+  game: GameDetail;
+  /** このカードを保存したもの。保存後に棋譜 URL をコピーできるよう残す。 */
+  saved: GameSummary | null;
+  notice: string;
+  error: string;
+};
+
+/** 取得元の表示名。カードにどのサイトから取ったかを出す。 */
+const SOURCE_LABELS: Record<string, string> = {
+  yomiuri: "読売（竜王戦）",
+  shogilive: "将棋連盟 中継",
+};
+
+/** カードの識別子。取得元ごとに棋譜 ID の形が違うので取得元も含める。 */
+function cardKey(game: GameDetail): string {
+  return `${game.source}:${game.sourceId}`;
+}
+
+/**
+ * ライブ取得できる取得元かどうか（＝「取得 URL」を出せるか）。
+ *
+ * URL 取り込み・貼り付けは取得元での一意な ID が無く sourceId が毎回新しい UUID
+ * なので、そこへ取り直しに行くことはできない。
+ */
+function isLiveSource(source: string): boolean {
+  return source in SOURCE_LABELS;
+}
+
+/**
  * 取得タブの状態。タブを切り替えると中身がアンマウントされるため、
  * 入力した URL と取得結果が消えないよう App 側で保持する。
  *
@@ -14,20 +58,41 @@ type Tab = "fetch" | "import" | "library" | "server";
  */
 type FetchState = {
   input: string;
-  preview: GameDetail | null;
-  /** 直前に保存したもの。保存後に棋譜 URL をコピーできるよう残す。 */
-  saved: GameSummary | null;
+  /** 新しく取得したものが先頭。 */
+  cards: FetchCard[];
+  /** 取得そのものの失敗（カードにならないのでここに出す）。 */
   error: string;
-  notice: string;
 };
 
 const emptyFetchState: FetchState = {
   input: "",
-  preview: null,
-  saved: null,
+  cards: [],
   error: "",
-  notice: "",
 };
+
+/**
+ * 取得結果をカードへ反映する。key が一致するカードがあれば増やさず、
+ * 位置と保存済みの情報（saved）を保ったまま中身だけ差し替える。
+ */
+function mergeCard(cards: FetchCard[], key: string, game: GameDetail): FetchCard[] {
+  const i = cards.findIndex((c) => c.key === key);
+  if (i < 0) return [{ key, game, saved: null, notice: "", error: "" }, ...cards];
+  const next = [...cards];
+  next[i] = { ...next[i], game, notice: refreshNotice(next[i], game), error: "" };
+  return next;
+}
+
+/**
+ * 取り直したときの案内。手数の変化を出す（対局中は進んだかどうかが知りたいため）。
+ *
+ * 保存は画面の内容をそのまま書き込むので、更新しただけでは保存済みの棋譜は古いまま。
+ * 保存済みのカードで手数が変わったときは保存し直すよう促す。
+ */
+function refreshNotice(prev: FetchCard, game: GameDetail): string {
+  if (game.moves === prev.game.moves) return "最新化しました（手数は変わっていません）";
+  const head = `最新化しました（${prev.game.moves} → ${game.moves} 手）`;
+  return prev.saved ? `${head}。保存し直すと保存済みの棋譜も最新になります` : head;
+}
 
 /** 登録タブの入力方法。 */
 type ImportMode = "url" | "paste";
@@ -114,11 +179,15 @@ function CopyURLButton({
 /**
  * 手数の表示。終局していれば「(終局)」を添える。
  * 対局中の棋譜は随時更新されるため、保存済みでも終局済みとは限らない。
+ *
+ * 0 手は**エラーではない**。中継は対局開始前から棋譜(ヘッダだけ)が
+ * 置かれているため、まだ指されていないという意味で「(対局前)」を添える。
  */
 function Moves({ moves, finished, endMark }: { moves: number; finished: boolean; endMark: string }) {
   return (
     <>
       {moves}
+      {moves === 0 && !finished && <span className="ended">（対局前）</span>}
       {finished && (
         <span className="ended" title={endMark}>
           （終局）
@@ -180,7 +249,13 @@ export default function App() {
   );
 }
 
-/** 取得タブ: URL または棋譜 ID から取得してプレビュー → 保存。 */
+/**
+ * 取得タブ: URL または棋譜 ID から取得してカードを並べ、カードごとに保存する。
+ *
+ * 複数の対局を同時に追えるよう、取得するたびにカードを追加する。
+ * すでに取得済みの棋譜をもう一度取ったときは、カードを増やさずその場で最新化する
+ * （対局中は同じ棋譜を繰り返し取り直すため）。
+ */
 function FetchTab({
   state,
   setState,
@@ -192,15 +267,23 @@ function FetchTab({
 }) {
   // 通信中フラグは一時的なものなのでタブ内に持つ。
   const [busy, setBusy] = useState(false);
+  // 更新・保存はカード単位なので、どのカードで何を処理中かを持つ。
+  const [pending, setPending] = useState<{ key: string; kind: CardAction } | null>(null);
 
-  const { input, preview, saved, error, notice } = state;
+  const { input, cards, error } = state;
   const patch = (p: Partial<FetchState>) => setState((s) => ({ ...s, ...p }));
+  const patchCard = (key: string, p: Partial<FetchCard>) =>
+    setState((s) => ({
+      ...s,
+      cards: s.cards.map((c) => (c.key === key ? { ...c, ...p } : c)),
+    }));
 
-  const run = async (fn: () => Promise<void>) => {
+  const handleFetch = async () => {
     setBusy(true);
-    patch({ error: "", notice: "" });
+    patch({ error: "" });
     try {
-      await fn();
+      const d = await KifuService.Fetch(input);
+      setState((s) => ({ ...s, cards: mergeCard(s.cards, cardKey(d), d) }));
     } catch (e) {
       patch({ error: errorMessage(e) });
     } finally {
@@ -208,36 +291,65 @@ function FetchTab({
     }
   };
 
-  const handleFetch = () =>
-    run(async () => {
-      const d = await KifuService.Fetch(input);
-      patch({ preview: d, saved: null });
-    });
+  // 更新はそのカードの取得元と棋譜 ID でサイトへ取り直す。対局中は棋譜が伸びていくため、
+  // 保存の前にこれを押して画面の内容を最新にする（保存は画面の内容をそのまま書く）。
+  // 取得元が分かっているので、URL から棋譜 ID を引き直す往復は挟まらない。
+  const handleRefresh = async (card: FetchCard) => {
+    setPending({ key: card.key, kind: "refresh" });
+    patchCard(card.key, { error: "", notice: "" });
+    try {
+      const d = await KifuService.Refresh(card.game.source, card.game.sourceId);
+      setState((s) => ({ ...s, cards: mergeCard(s.cards, card.key, d) }));
+    } catch (e) {
+      patchCard(card.key, { error: errorMessage(e) });
+    } finally {
+      setPending(null);
+    }
+  };
 
   // 保存は取得し直さず、いま表示している内容をそのまま書き込む。
-  // 入力とプレビューは残す（保存後に URL をコピーしたり取り直したりできるように）。
-  const handleSave = () =>
-    run(async () => {
-      if (!preview) return;
-      const rec = await KifuService.Save(preview);
-      patch({ saved: rec, notice: `保存しました: ${rec.event || rec.sourceId}` });
+  // 入力とカードは残す（保存後に URL をコピーしたり取り直したりできるように）。
+  const handleSave = async (card: FetchCard) => {
+    setPending({ key: card.key, kind: "save" });
+    patchCard(card.key, { error: "", notice: "" });
+    try {
+      const rec = await KifuService.Save(card.game);
+      patchCard(card.key, { saved: rec, notice: `保存しました: ${rec.event || rec.sourceId}` });
       onSaved();
-    });
+    } catch (e) {
+      patchCard(card.key, { error: errorMessage(e) });
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const removeCard = (key: string) =>
+    setState((s) => ({ ...s, cards: s.cards.filter((c) => c.key !== key) }));
 
   return (
     <section>
       <h2>棋譜を取得</h2>
       <p className="hint">
-        読売(竜王戦)の対局ページ URL、棋譜ビューアの URL、棋譜 ID のいずれかを入力してください。
-        取得した内容を確認してから保存します。
+        対局中に随時更新される中継から取得します。取得した内容を確認してから保存します。
+        取得するたびにカードが増えるので、複数の対局を並べて追えます
+        （同じ棋譜を取り直したときはそのカードが最新化されます）。
       </p>
+      <ul className="hint">
+        <li>
+          <strong>読売（竜王戦）</strong>: 対局ページ URL、棋譜ビューアの URL、棋譜 ID
+        </li>
+        <li>
+          <strong>将棋連盟の中継</strong>: <code>live.shogi.or.jp</code> の中継ページ URL（
+          <code>.html</code>）または <code>.kif</code> の URL
+        </li>
+      </ul>
 
       <div className="row">
         <input
           className="grow"
           type="text"
           value={input}
-          placeholder="https://www.yomiuri.co.jp/igoshougi/ryuoh/kifu/..."
+          placeholder="http://live.shogi.or.jp/oui/kifu/67/oui202607290101.html"
           onChange={(e) => patch({ input: e.target.value })}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !busy && input.trim()) handleFetch();
@@ -248,8 +360,8 @@ function FetchTab({
         </button>
         <button
           onClick={() => setState(emptyFetchState)}
-          disabled={busy || (!input && !preview)}
-          title="入力と取得結果をクリアする"
+          disabled={busy || (!input && cards.length === 0)}
+          title="入力と取得したカードをすべてクリアする"
         >
           クリア
         </button>
@@ -257,48 +369,110 @@ function FetchTab({
 
       {busy && <p className="notice">通信中…</p>}
       {error && <p className="error">{error}</p>}
-      {notice && <p className="notice">{notice}</p>}
 
-      {preview && (
-        <div className="preview">
-          <GamePreview game={preview} />
-
-          {!preview.finished && (
-            <p className="hint">
-              まだ終局していません。対局中の棋譜は随時更新されるため、
-              保存しても後で取り直す必要があります（同じ棋譜なら保存し直しても増えません）。
-              対局中はこのまま「取得 URL」を外部ツールに渡すと、開くたびに最新が取れます。
-            </p>
-          )}
-
-          <div className="row">
-            <button className="primary" onClick={handleSave} disabled={busy}>
-              {saved ? "保存し直す" : "この内容を保存"}
-            </button>
-            {saved && (
-              <CopyURLButton
-                label="棋譜 URL をコピー"
-                title="保存済み棋譜の URL（サイトへは取りに行かない）"
-                load={() => ServerService.KifuURLs(saved.id)}
-              />
-            )}
-            <CopyURLButton
-              label="取得 URL をコピー"
-              title="開くたびにサイトから取り直す URL（対局中向け）"
-              load={() => ServerService.SourceURLs(preview.sourceId)}
-            />
-          </div>
-        </div>
-      )}
+      {cards.map((card) => (
+        <FetchCardView
+          key={card.key}
+          card={card}
+          pending={pending?.key === card.key ? pending.kind : null}
+          onRefresh={() => handleRefresh(card)}
+          onSave={() => handleSave(card)}
+          onRemove={() => removeCard(card.key)}
+        />
+      ))}
     </section>
   );
 }
 
-/** 取得・登録の共通プレビュー（読み取れた対局情報と KIF 本文）。 */
-function GamePreview({ game }: { game: GameDetail }) {
+/** カード単位の通信。ボタンの表示を処理中に切り替えるのに使う。 */
+type CardAction = "refresh" | "save";
+
+/** 取得タブのカード1枚。プレビューと、そのカードに対する更新・保存・削除。 */
+function FetchCardView({
+  card,
+  pending,
+  onRefresh,
+  onSave,
+  onRemove,
+}: {
+  card: FetchCard;
+  pending: CardAction | null;
+  onRefresh: () => void;
+  onSave: () => void;
+  onRemove: () => void;
+}) {
+  const { game, saved, notice, error } = card;
+  const busy = pending !== null;
+
+  return (
+    <div className="preview">
+      <div className="row space-between">
+        <h3>
+          {game.event || "(棋戦名なし)"}
+          <span className="source-tag">{SOURCE_LABELS[game.source] || game.source}</span>
+        </h3>
+        <span className="row card-actions">
+          <button
+            onClick={onRefresh}
+            disabled={busy || !game.sourceId}
+            title="サイトから取り直してこのカードを最新にする（対局中は棋譜が伸びる）"
+          >
+            {pending === "refresh" ? "更新中…" : "更新"}
+          </button>
+          <button
+            className="danger"
+            onClick={onRemove}
+            disabled={busy}
+            title="このカードを閉じる（保存済みの棋譜は消えない）"
+          >
+            削除
+          </button>
+        </span>
+      </div>
+
+      <GamePreview game={game} showTitle={false} />
+
+      {!game.finished && (
+        <p className="hint">
+          まだ終局していません。保存はいま表示している内容をそのまま書き込むので、
+          最新の棋譜を保存したいときは先に「更新」を押してください
+          （同じ棋譜なら保存し直しても増えません）。 対局中はこのまま「取得 URL」を外部ツールに渡すと、
+          開くたびに最新が取れます。
+        </p>
+      )}
+
+      {error && <p className="error">{error}</p>}
+      {notice && <p className="notice">{notice}</p>}
+
+      <div className="row">
+        <button className="primary" onClick={onSave} disabled={busy}>
+          {pending === "save" ? "保存中…" : saved ? "保存し直す" : "この内容を保存"}
+        </button>
+        {saved && (
+          <CopyURLButton
+            label="棋譜 URL をコピー"
+            title="保存済み棋譜の URL（サイトへは取りに行かない）"
+            load={() => ServerService.KifuURLs(saved.id)}
+          />
+        )}
+        <CopyURLButton
+          label="取得 URL をコピー"
+          title="開くたびにサイトから取り直す URL（対局中向け）"
+          load={() => ServerService.SourceURLs(game.source, game.sourceId)}
+        />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 取得・登録の共通プレビュー（読み取れた対局情報と KIF 本文）。
+ * 取得タブのカードは見出しの行に削除ボタンを並べるため、棋戦名を自分で出す（showTitle=false）。
+ */
+function GamePreview({ game, showTitle = true }: { game: GameDetail; showTitle?: boolean }) {
   return (
     <>
-      <h3>{game.event || "(棋戦名なし)"}</h3>
+      {showTitle && <h3>{game.event || "(棋戦名なし)"}</h3>}
       <dl className="meta">
         <dt>先手</dt>
         <dd>{game.black || "-"}</dd>
@@ -404,7 +578,7 @@ function ImportTab({
             className="grow"
             type="text"
             value={url}
-            placeholder="https://example.com/kifu/20241019.kif"
+            placeholder="http://live.shogi.or.jp/oui/kifu/67/oui202607290101.html"
             onChange={(e) => patch({ url: e.target.value })}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !busy && canRun) handlePreview();
@@ -445,6 +619,18 @@ function ImportTab({
           Shift_JIS の .kif も自動で判別します。他の kicho の
           <code> /kifu/&#123;id&#125; </code>
           も取り込めます。
+        </p>
+      )}
+      {mode === "url" && (
+        <p className="hint">
+          棋譜中継ページ（HTML）の URL なら、ページが読んでいる
+          <code> .kif </code>
+          を辿ります。ただし
+          <strong>
+            将棋連盟の中継（<code>live.shogi.or.jp</code>）は「取得」タブを使ってください
+          </strong>
+          。 対局中は棋譜が伸びていくので、カードとして積んで「更新」で取り直せる側が向いています
+          （ここで登録すると取り込むたびに別の棋譜として増えます）。
         </p>
       )}
 
@@ -492,7 +678,11 @@ function ImportTab({
  */
 function LibraryTab({ revision }: { revision: number }) {
   const [games, setGames] = useState<GameSummary[]>([]);
+  // matched は条件に合う件数（上限で切る前）、total は棚全体の件数。
+  const [matched, setMatched] = useState(0);
   const [total, setTotal] = useState(0);
+  const [truncated, setTruncated] = useState(false);
+  const [limit, setLimit] = useState(0);
   const [selected, setSelected] = useState<GameDetail | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -503,17 +693,20 @@ function LibraryTab({ revision }: { revision: number }) {
   const [to, setTo] = useState("");
   const [finishedOnly, setFinishedOnly] = useState(false);
 
+  // 件数は Search が一緒に返す。
+  // ⚠️ **Count を別に呼ばないこと。** 条件付きの該当件数（matched）は
+  // 検索と同じ条件で数える必要があり、Go 側で同じ WHERE を共有している。
   const search = useCallback(
     async (q: { text: string; from: string; to: string; finishedOnly: boolean }) => {
       setLoading(true);
       setError("");
       try {
-        const [list, n] = await Promise.all([
-          KifuService.Search({ ...q, limit: 0 }),
-          KifuService.Count(),
-        ]);
-        setGames(list ?? []);
-        setTotal(n);
+        const res = await KifuService.Search({ ...q, limit: 0, offset: 0 });
+        setGames(res.games ?? []);
+        setMatched(res.matched);
+        setTotal(res.total);
+        setTruncated(res.truncated);
+        setLimit(res.limit);
       } catch (e) {
         setError(errorMessage(e));
       } finally {
@@ -570,7 +763,7 @@ function LibraryTab({ revision }: { revision: number }) {
     <section>
       <div className="row space-between">
         <h2>
-          棋譜一覧（{games.length}
+          棋譜一覧（{hasConditions ? matched : total}
           {hasConditions && total > 0 && ` / ${total}`}）
         </h2>
         <button onClick={reload} disabled={loading}>
@@ -616,6 +809,12 @@ function LibraryTab({ revision }: { revision: number }) {
       {shortText && (
         <p className="hint">
           検索語が 3 文字未満です。索引が使えないため全件を走査します（件数が増えると遅くなります）。
+        </p>
+      )}
+
+      {truncated && (
+        <p className="notice">
+          該当 {matched} 件のうち新しい {limit} 件だけを表示しています。条件で絞り込んでください。
         </p>
       )}
 
@@ -679,11 +878,11 @@ function LibraryTab({ revision }: { revision: number }) {
               title="保存済み棋譜の URL（サイトへは取りに行かない）"
               load={() => ServerService.KifuURLs(selected.id)}
             />
-            {selected.sourceId && (
+            {isLiveSource(selected.source) && selected.sourceId && (
               <CopyURLButton
                 label="取得 URL をコピー"
                 title="開くたびにサイトから取り直す URL（対局中向け）"
-                load={() => ServerService.SourceURLs(selected.sourceId)}
+                load={() => ServerService.SourceURLs(selected.source, selected.sourceId)}
               />
             )}
           </div>

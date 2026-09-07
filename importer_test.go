@@ -134,12 +134,30 @@ func TestImportKIFAlwaysCreatesNewRecord(t *testing.T) {
 	if first.ID == second.ID {
 		t.Error("同じ ID になっている（毎回新規登録のはず）")
 	}
-	n, err := lib.Store().Count(ctx)
+	n, err := lib.Count(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n != 2 {
 		t.Errorf("Count = %d, want 2", n)
+	}
+}
+
+// 対局前の棋譜(ヘッダだけで指し手が無い)も取り込める。
+// 指し手が無いのは読み取りの失敗ではなく、まだ指されていないという事実。
+func TestImportKIFWithoutMoves(t *testing.T) {
+	lib := newTestLibrary(t)
+
+	src := "棋戦：第67期王位戦\n先手：伊藤匠二冠\n後手：藤井聡太王位\n手数----指手---------消費時間--\n"
+	rec, err := lib.ImportKIF(context.Background(), src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Game.Moves != 0 {
+		t.Errorf("Moves = %d, want 0", rec.Game.Moves)
+	}
+	if rec.Game.Event != "第67期王位戦" {
+		t.Errorf("Event = %q", rec.Game.Event)
 	}
 }
 
@@ -198,6 +216,91 @@ func TestImportURLShiftJIS(t *testing.T) {
 	}
 }
 
+// relayPage は日本将棋連盟の棋譜中継ページ
+// (http://live.shogi.or.jp/oui/kifu/67/oui202607290101.html) を写したもの。
+// 中継ビューア(kj.js)が読む KIF_FILE_NAME に .kif の在り処が入っている。
+const relayPage = `<!doctype html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>2026年7月29日～7月30日　七番勝負　第３局</title>
+</head>
+<body id="oui">
+<main>
+  <script language="javascript" type="text/javascript">
+    const KJ_DIR = "/common/js/kj/";
+    const KIF_FILE_NAME = "/oui/kifu/67/oui202607290101.kif";
+    const UPDATE_TIME = 1;
+  </script>
+  <script src="/common/js/kj/kj.js"></script>
+</main>
+</body>
+</html>
+`
+
+// 棋譜中継ページ(HTML)の URL を貼っても取り込めること。
+//
+// ページから対局内容を読み取るのではなく、そこに書かれた .kif を辿って
+// **原本をそのまま**取り込む。
+func TestImportURLFollowsRelayPage(t *testing.T) {
+	lib := newTestLibrary(t)
+
+	kif := toShiftJIS(t, importSample) // 連盟の .kif は Shift_JIS
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oui/kifu/67/oui202607290101.html", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+		w.Write([]byte(relayPage))
+	})
+	mux.HandleFunc("/oui/kifu/67/oui202607290101.kif", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=Shift_JIS")
+		w.Write(kif)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	pageURL := srv.URL + "/oui/kifu/67/oui202607290101.html"
+	rec, err := lib.ImportURL(context.Background(), pageURL)
+	if err != nil {
+		t.Fatalf("ImportURL: %v", err)
+	}
+	if rec.Event != "テスト棋戦" || rec.Moves != 3 {
+		t.Errorf("メタデータが取れていない: %+v", rec.Game)
+	}
+	// 出所は貼られた中継ページの URL を残す(.kif に書き換えない)。
+	if rec.SourceURL != pageURL {
+		t.Errorf("SourceURL = %q, want %q", rec.SourceURL, pageURL)
+	}
+	if rec.Encoding != EncodingShiftJIS {
+		t.Errorf("Encoding = %q, want %q", rec.Encoding, EncodingShiftJIS)
+	}
+}
+
+// .kif へのリンクからも辿れること(KIF_FILE_NAME を持たないサイト向けの保険)。
+func TestImportURLFollowsKifAnchor(t *testing.T) {
+	lib := newTestLibrary(t)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/kifu/index.html", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`<html><body><a href="../download/20260729.kif?v=2">棋譜</a></body></html>`))
+	})
+	mux.HandleFunc("/download/20260729.kif", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(importSample))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	rec, err := lib.ImportURL(context.Background(), srv.URL+"/kifu/index.html")
+	if err != nil {
+		t.Fatalf("ImportURL: %v", err)
+	}
+	if rec.Event != "テスト棋戦" {
+		t.Errorf("Event = %q", rec.Event)
+	}
+}
+
+// HTML の解決そのもの(KIF_FILE_NAME・相対パス・HTML 判定)は
+// 取得元と共通なので scrape 側のテストで固定している(scrape/fetch_test.go)。
+
 func TestImportURLErrors(t *testing.T) {
 	lib := newTestLibrary(t)
 	ctx := context.Background()
@@ -213,10 +316,11 @@ func TestImportURLErrors(t *testing.T) {
 	defer html.Close()
 
 	cases := map[string]string{
-		"スキームなし":     "example.com/kifu.kif",
-		"file スキーム":  "file:///C:/kifu.kif",
-		"HTTP エラー":   notFound.URL,
-		"KIF ではない内容": html.URL,
+		"スキームなし":    "example.com/kifu.kif",
+		"file スキーム": "file:///C:/kifu.kif",
+		"HTTP エラー":  notFound.URL,
+		// HTML が返ってきたら .kif を辿るが、リンクが無ければエラーにする。
+		"棋譜リンクの無い HTML": html.URL,
 	}
 	for name, u := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -271,9 +375,9 @@ func TestImportURLRoundTripThroughOwnServer(t *testing.T) {
 		},
 	}.String()
 
-	saved, err := lib.Store().Save(ctx, store.Game{
+	saved, err := lib.Save(ctx, Fetched{
 		Source: store.SourceYomiuri, SourceID: "orig",
-		Event: "第37期竜王戦七番勝負第２局", Moves: 4, EndMark: "投了", Body: origKIF,
+		Event: "第37期竜王戦七番勝負第２局", Moves: 4, EndMark: "投了", KIF: origKIF,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -325,11 +429,11 @@ func TestImportedGameIsSearchable(t *testing.T) {
 	if _, err := lib.ImportKIF(ctx, importSample); err != nil {
 		t.Fatal(err)
 	}
-	got, err := lib.Store().Search(ctx, store.Query{Text: "テスト棋戦"})
+	got, err := lib.Search(ctx, store.Query{Text: "テスト棋戦"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 {
-		t.Errorf("検索できない: %d件", len(got))
+	if len(got.Games) != 1 {
+		t.Errorf("検索できない: %d件", len(got.Games))
 	}
 }

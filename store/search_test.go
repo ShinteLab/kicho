@@ -341,3 +341,66 @@ func TestDeleteRemovesKifu(t *testing.T) {
 		t.Errorf("game_kifu still has %d row(s) for the deleted game", n)
 	}
 }
+
+// CountQuery と Search が同じ条件を見ていること。
+//
+// **whereClause を共有している意味がここ。** 片方だけ条件を足すと
+// 「一覧に出る件数」と「該当件数」が食い違い、UI の「N 件中 M 件」が嘘になる。
+func TestCountQueryAgreesWithSearch(t *testing.T) {
+	s := newTestStore(t)
+	seedGames(t, s)
+	ctx := context.Background()
+
+	queries := []Query{
+		{},
+		{Text: "竜王戦"},
+		{Text: "決勝"}, // 3 文字未満ではないが FTS に当たらない語
+		{Text: "王"},  // LIKE へフォールバックする長さ
+		{FinishedOnly: true},
+		{From: time.Date(2024, 10, 1, 0, 0, 0, 0, time.UTC)},
+	}
+	for _, q := range queries {
+		got, err := s.Search(ctx, q)
+		if err != nil {
+			t.Fatalf("Search(%+v): %v", q, err)
+		}
+		n, err := s.CountQuery(ctx, q)
+		if err != nil {
+			t.Fatalf("CountQuery(%+v): %v", q, err)
+		}
+		if n != len(got) {
+			t.Errorf("Query%+v: CountQuery = %d, Search = %d 件", q, n, len(got))
+		}
+	}
+}
+
+// Limit を掛けても CountQuery は該当件数を返すこと（切る前の数）。
+func TestCountQueryIgnoresLimit(t *testing.T) {
+	s := newTestStore(t)
+	seedGames(t, s)
+	ctx := context.Background()
+
+	all, err := s.Search(ctx, Query{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) < 2 {
+		t.Fatalf("テストデータが足りない: %d 件", len(all))
+	}
+
+	q := Query{Limit: 1}
+	got, err := s.Search(ctx, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Search = %d 件, want 1", len(got))
+	}
+	n, err := s.CountQuery(ctx, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != len(all) {
+		t.Errorf("CountQuery = %d, want %d（Limit を無視するはず）", n, len(all))
+	}
+}

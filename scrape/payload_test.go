@@ -144,14 +144,38 @@ func TestParsePayloadErrors(t *testing.T) {
 		"評価できない":      `export default (function({{{);`,
 		"data が無い":    `export default ({});`,
 		"kifu が無い":    `export default ({data:{}});`,
-		"指し手が空":       `export default ({data:{kifu:{kifu:[]}}});`,
-		"指し手がメタのみ":    `export default ({data:{kifu:{kifu:[{num:0,move:null}]}}});`,
 		"kifu が配列でない": `export default ({data:{kifu:{kifu:5}}});`,
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
 			if _, err := parsePayload(src); err == nil {
 				t.Errorf("parsePayload(%q) succeeded, want error", src)
+			}
+		})
+	}
+}
+
+// 対局前は kifu が空(または開始前のメタ要素のみ)で来る。
+// **指し手が無いだけなのでエラーにしない。**
+func TestParsePayloadNoMoves(t *testing.T) {
+	cases := map[string]string{
+		"指し手が空":    `export default ({data:{kifu:{kifu:[],event:"竜王戦",player1:"A",player2:"B"}}});`,
+		"指し手がメタのみ": `export default ({data:{kifu:{kifu:[{num:0,move:null}],event:"竜王戦",player1:"A",player2:"B"}}});`,
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			g, err := parsePayload(src)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(g.Moves) != 0 {
+				t.Errorf("len(Moves) = %d, want 0", len(g.Moves))
+			}
+			if g.Event != "竜王戦" || g.Black != "A" || g.White != "B" {
+				t.Errorf("Event=%q Black=%q White=%q", g.Event, g.Black, g.White)
+			}
+			if g.Finished() {
+				t.Error("Finished() = true, want false")
 			}
 		})
 	}
@@ -165,5 +189,27 @@ func TestParsePayloadInterruptsInfiniteLoop(t *testing.T) {
 	_, err := parsePayload(`export default (function(){while(true){}}());`)
 	if err == nil {
 		t.Fatal("infinite loop payload succeeded, want interrupt error")
+	}
+}
+
+// TestNormalizeMoveName は読売の "打" 二重付けを潰すことを見る。
+//
+// 第39期竜王戦挑戦者決定三番勝負第３局(6a74125e9a7091804958e73e)の 91手目が
+// `move:"７五桂打打"` で配信されている。記録係の入力ミスがそのまま出ているもので、
+// 潰さないと `91 ７五桂打打(00)` になり外部ツールがそこで止まる。
+func TestNormalizeMoveName(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"７五桂打打", "７五桂打"},
+		{"投了打打", "投了打"}, // TerminalMarker が "打" 1つを落として終局と判定できる形
+		// 正しい表記は触らない。
+		{"５五角打", "５五角打"},
+		{"７六歩", "７六歩"},
+		{"投了打", "投了打"},
+		{"同桂成", "同桂成"},
+	}
+	for _, tt := range tests {
+		if got := normalizeMoveName(tt.in); got != tt.want {
+			t.Errorf("normalizeMoveName(%q) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }

@@ -23,11 +23,20 @@ import (
 // ErrNotFound は該当する棋譜が無いことを表す。
 var ErrNotFound = errors.New("kicho: game not found")
 
+// ErrSchemaTooNew は DB のスキーマ版がこのプログラムより新しいことを表す。
+// Open が返す。呼び出し側(ikkyoku など)が「更新してください」と案内するために
+// 文言比較ではなく errors.Is で判定できるようにしてある。
+var ErrSchemaTooNew = errors.New("kicho: database schema is newer than this build")
+
 // 棋譜の取得元。
 const (
 	// SourceYomiuri は読売サイトからのスクレイピング。SourceID は読売の棋譜 ID で、
 	// 取り直しても同じ棋譜として更新される。
 	SourceYomiuri = "yomiuri"
+	// SourceShogiLive は日本将棋連盟の棋譜中継(live.shogi.or.jp)。
+	// SourceID は中継のパス(拡張子なし。例 "oui/kifu/67/oui202607290101")で、
+	// 読売と同じく取り直しても同じ棋譜として更新される。
+	SourceShogiLive = "shogilive"
 	// SourceURL は任意の URL から KIF を取得したもの。
 	SourceURL = "url"
 	// SourcePaste は KIF テキストを直接貼り付けたもの。
@@ -36,7 +45,7 @@ const (
 
 // Game は保存する棋譜1局分。KIF テキストは組み立て済みのものを受け取る。
 type Game struct {
-	Source   string // 取得元(SourceYomiuri / SourceURL / SourcePaste)
+	Source   string // 取得元(SourceYomiuri / SourceShogiLive / SourceURL / SourcePaste)
 	SourceID string // 取得元での ID
 	// SourceURL は取得元の URL(URL 取り込みのみ。出所を残すため)。
 	SourceURL string
@@ -84,24 +93,41 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("create data dir: %w", err)
 		}
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite %s: %w", path, err)
 	}
-	// modernc の SQLite は単一接続に絞ると database is locked を避けやすい。
-	// 接続が1本なので PRAGMA も1回で足りる。
+	// 接続は1本に絞る。同一プロセス内の書き込みはこれで直列化される
+	// (プロセスをまたぐ競合は WAL と busy_timeout が受け持つ。dsn を参照)。
 	db.SetMaxOpenConns(1)
 
-	// game_kifu の ON DELETE CASCADE を効かせる(既定は OFF)。
-	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("enable foreign keys: %w", err)
-	}
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return &Store{db: db}, nil
+}
+
+// dsn は接続文字列を組み立てる。
+//
+// ⚠️ **PRAGMA は接続ごとの設定なので、Open で1回 Exec するだけでは足りない。**
+// database/sql は接続が壊れれば黙って張り直すため、そのとき設定が既定へ戻る
+// (特に foreign_keys が OFF に戻ると Delete しても game_kifu に本文が残る)。
+// DSN に載せておけば modernc.org/sqlite が接続を張るたびに適用する。
+//
+//   - busy_timeout … 既定は 0 で、ロックに当たると待たずに database is locked。
+//     kicho と ikkyoku が同じ DB を開く運用があるので待たせる
+//   - journal_mode(WAL) … 読みが書きをブロックしない。DB ファイルに永続する設定で、
+//     隣に -wal / -shm が並ぶ
+//   - foreign_keys … game_kifu の ON DELETE CASCADE を効かせる(既定は OFF)
+//
+// パスに `file:` を付けないのが要点。付けると SQLITE_OPEN_URI で URI として
+// 解釈され、Windows のパス(`D:\...`)やスペースを含むパスが壊れる。
+// 付けなければドライバは最初の `?` より前をパスとしてそのまま渡す。
+func dsn(path string) string {
+	return path + "?_pragma=busy_timeout(5000)" +
+		"&_pragma=journal_mode(WAL)" +
+		"&_pragma=foreign_keys(1)"
 }
 
 // Close は DB を閉じる。
@@ -369,15 +395,16 @@ func escapeLike(s string) string {
 	return r.Replace(s)
 }
 
-// Search は条件に合う棋譜をメタデータのみ(KIF 本文なし)で新しい順に返す。
-func (s *Store) Search(ctx context.Context, q Query) ([]Record, error) {
+// whereClause は Query を FROM 以降の SQL とプレースホルダの値に落とす。
+//
+// **Search と CountQuery で共有する。** 片方だけ条件を足すと
+// 「一覧に出る件数」と「該当件数」が食い違い、UI の「N 件中 M 件」が嘘になる。
+func whereClause(q Query) (sql string, args []any) {
 	var (
 		sb    strings.Builder
-		args  []any
 		where []string
 	)
-
-	sb.WriteString(`SELECT ` + metaColumns + ` FROM games g`)
+	sb.WriteString(` FROM games g`)
 
 	text := strings.TrimSpace(q.Text)
 	if text != "" {
@@ -412,6 +439,32 @@ func (s *Store) Search(ctx context.Context, q Query) ([]Record, error) {
 		sb.WriteString(` WHERE `)
 		sb.WriteString(strings.Join(where, ` AND `))
 	}
+	return sb.String(), args
+}
+
+// CountQuery は条件に合う棋譜の件数を返す(Limit / Offset は無視する)。
+//
+// Search を Limit で切ったときに「全 N 件中 M 件」を出すために使う。
+func (s *Store) CountQuery(ctx context.Context, q Query) (int, error) {
+	from, args := whereClause(q)
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*)`+from, args...).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count matching games: %w", err)
+	}
+	return n, nil
+}
+
+// Search は条件に合う棋譜をメタデータのみ(KIF 本文なし)で新しい順に返す。
+//
+// **Limit 0 は無制限**。件数を絞るのは呼び出し側の責任で、
+// アプリの一覧は kicho.Library.Search が上限を掛ける
+// (httpapi の一覧は外部ツールが全件を期待するのでここで切らない)。
+func (s *Store) Search(ctx context.Context, q Query) ([]Record, error) {
+	from, args := whereClause(q)
+
+	var sb strings.Builder
+	sb.WriteString(`SELECT ` + metaColumns)
+	sb.WriteString(from)
 	sb.WriteString(orderNewestFirst)
 
 	if q.Limit > 0 {
