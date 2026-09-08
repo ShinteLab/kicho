@@ -11,10 +11,15 @@ package store
 //	3: 棋譜本文を「登録された形式の原本」として持つ。
 //	   game_kifu に format（kif/ki2/csa/…）と encoding（元の文字コード）を追加。
 //	   変換は保存せず、要求時に行う（kicho/format）
-const schemaVersion = 3
+//	4: 追跡中の中継（watches）を追加。2日制の対局で翌日また URL を貼り直さずに
+//	   済むよう、「どのサイトのどの棋譜か」を再起動を跨いで持つ
+const schemaVersion = 4
 
 // schemaSQL は最新スキーマ。マイグレーションでも同じものを使う。
-const schemaSQL = `
+const schemaSQL = gamesSchemaSQL + watchesSchemaSQL
+
+// gamesSchemaSQL は保存済みの棋譜（蔵書）。
+const gamesSchemaSQL = `
 CREATE TABLE IF NOT EXISTS games (
     id          TEXT PRIMARY KEY,
     source      TEXT NOT NULL,
@@ -78,6 +83,36 @@ CREATE TRIGGER IF NOT EXISTS games_fts_au AFTER UPDATE ON games BEGIN
     VALUES (new.rowid, new.event, new.black, new.white, new.place);
 END;
 `
+
+// watchesSchemaSQL は追跡中の中継（UI の「仮の一覧」）。
+//
+// **棋譜本文は持たない。** ここが持つのは「どのサイトのどの棋譜か」
+// （source / source_id / source_url）と、一覧で見分けるための最小限のメタだけ。
+// 本文を保存するのは「棋譜保存」（games）の役目で、こちらは
+// **2日制の対局で翌日また URL を貼り直さずに済むようにする**ためのもの。
+//
+// 主キーを (source, source_id) にしてあるのは games の UNIQUE 索引と同じ粒度。
+// 同じ中継を何度取り直しても増えず、内容だけが最新化される
+// （フロントの cardKey も同じ組み合わせでカードを同一視している）。
+const watchesSchemaSQL = `
+CREATE TABLE IF NOT EXISTS watches (
+    source     TEXT NOT NULL,
+    source_id  TEXT NOT NULL,
+    source_url TEXT NOT NULL DEFAULT '',
+    event      TEXT NOT NULL DEFAULT '',
+    black      TEXT NOT NULL DEFAULT '',
+    white      TEXT NOT NULL DEFAULT '',
+    started_at INTEGER NOT NULL DEFAULT 0,
+    end_mark   TEXT NOT NULL DEFAULT '',
+    moves      INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (source, source_id)
+);
+`
+
+// migrateV3ToV4SQL は v3（watches 無し）へ追跡中の中継を足す。
+const migrateV3ToV4SQL = watchesSchemaSQL
 
 // migrateV0SQL は「KIF 同居・時刻 TEXT」だった旧スキーマを v1 へ移す。
 //

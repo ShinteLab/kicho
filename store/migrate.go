@@ -74,6 +74,17 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// v3 → v4: 追跡中の中継（仮の一覧）を足す。既存の棋譜には触らない。
+	hasWatches, err := tableExists(db, "watches")
+	if err != nil {
+		return err
+	}
+	if !hasWatches {
+		if _, err := db.Exec(migrateV3ToV4SQL); err != nil {
+			return fmt.Errorf("migrate to v4: %w", err)
+		}
+	}
+
 	return setVersion(db, schemaVersion)
 }
 
