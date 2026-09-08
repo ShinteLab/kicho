@@ -6,6 +6,7 @@ package kicho
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -162,18 +163,9 @@ func (l *Library) Save(ctx context.Context, f Fetched) (store.Record, error) {
 		return store.Record{}, ErrEmptyKifu
 	}
 
-	source, sourceURL := f.Source, f.SourceURL
-	switch source {
-	case store.SourceShogiLive:
-		sourceURL = l.shogilive.ViewerURL(f.SourceID)
-	case store.SourceYomiuri, "":
-		// 取得元が入っていない古い画面状態でも読売として保存できるようにしておく。
-		source = store.SourceYomiuri
-		sourceURL = scrape.ViewerURL(f.SourceID)
-	case store.SourceURL, store.SourcePaste:
-		// 取り込み系は貼られた URL をそのまま残す（貼り付けは空）。
-	default:
-		return store.Record{}, fmt.Errorf("%w: %s", ErrUnsupportedSource, source)
+	source, sourceURL, err := l.resolveSource(f.Source, f.SourceID, f.SourceURL)
+	if err != nil {
+		return store.Record{}, err
 	}
 
 	kifFormat := f.Format
@@ -193,7 +185,7 @@ func (l *Library) Save(ctx context.Context, f Fetched) (store.Record, error) {
 		moves = countMoves(f.KIF)
 	}
 
-	return l.store.Save(ctx, store.Game{
+	rec, err := l.store.Save(ctx, store.Game{
 		Source:    source,
 		SourceID:  f.SourceID,
 		SourceURL: sourceURL,
@@ -210,4 +202,40 @@ func (l *Library) Save(ctx context.Context, f Fetched) (store.Record, error) {
 		Format:   kifFormat,
 		Encoding: encoding,
 	})
+	if err != nil {
+		return store.Record{}, err
+	}
+
+	// 終局していれば追跡をやめる（もう取り直す必要がないため）。
+	// **対局中の保存では外さない** —— 2日制なら翌日も同じカードで追うので、
+	// 1日目の封じ手時点で保存したからといって一覧から消えては困る。
+	if rec.Finished() {
+		if err := l.Unwatch(ctx, rec.Source, rec.SourceID); err != nil &&
+			!errors.Is(err, store.ErrNotFound) {
+			// 保存自体は済んでいるので失敗にはしない（一覧に残るだけ）。
+			l.logger.Warn("unwatch after save", "source", rec.Source,
+				"sourceID", rec.SourceID, "error", err)
+		}
+	}
+	return rec, nil
+}
+
+// resolveSource は取得元と諸元(source_url)を決め直す。
+//
+// **Fetched は UI を往復してくるので、画面が持っている source_url を信じない。**
+// 保存（Save）と追跡（Watch）の両方が通るので、取得元ごとの決め方は
+// ここ 1 か所だけに置く。
+func (l *Library) resolveSource(source, sourceID, sourceURL string) (string, string, error) {
+	switch source {
+	case store.SourceShogiLive:
+		return source, l.shogilive.ViewerURL(sourceID), nil
+	case store.SourceYomiuri, "":
+		// 取得元が入っていない古い画面状態でも読売として扱えるようにしておく。
+		return store.SourceYomiuri, scrape.ViewerURL(sourceID), nil
+	case store.SourceURL, store.SourcePaste:
+		// 取り込み系は貼られた URL をそのまま残す（貼り付けは空）。
+		return source, sourceURL, nil
+	default:
+		return "", "", fmt.Errorf("%w: %s", ErrUnsupportedSource, source)
+	}
 }

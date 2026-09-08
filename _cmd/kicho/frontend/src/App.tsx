@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Clipboard } from "@wailsio/runtime";
 import { KifuService, ServerService } from "../bindings/kicho-app";
-import type { GameDetail, GameSummary, ServerStatus } from "../bindings/kicho-app/models";
+import type { GameDetail, GameSummary, ServerStatus, WatchEntry } from "../bindings/kicho-app/models";
 import "./app.css";
 
 type Tab = "fetch" | "import" | "library" | "server";
@@ -25,6 +25,13 @@ type FetchCard = {
   game: GameDetail;
   /** このカードを保存したもの。保存後に棋譜 URL をコピーできるよう残す。 */
   saved: GameSummary | null;
+  /**
+   * 仮の一覧（DB の watches）に載っているか。
+   *
+   * 載っていれば再起動しても復元される。終局済みを保存すると kicho 側が
+   * 外すので false になる（もう取り直す必要がないため）。
+   */
+  watched: boolean;
   notice: string;
   error: string;
 };
@@ -41,6 +48,38 @@ function cardKey(game: GameDetail): string {
 }
 
 /**
+ * 仮の一覧の1件をカードに戻す（再起動後の復元）。
+ *
+ * **KIF 本文は入っていない。** 復元の時点ではサイトへ取りに行かないので、
+ * 中身が要るときはユーザが「更新」を押す。保存ボタンはそれまで押せない。
+ */
+function cardFromWatch(w: WatchEntry): FetchCard {
+  const game: GameDetail = {
+    id: "",
+    source: w.source,
+    sourceId: w.sourceId,
+    sourceUrl: w.sourceUrl,
+    event: w.event,
+    handicap: "",
+    place: "",
+    black: w.black,
+    white: w.white,
+    startedAt: w.startedAt,
+    endMark: w.endMark,
+    finished: w.finished,
+    moves: w.moves,
+    kif: "",
+    encoding: "",
+  };
+  return { key: cardKey(game), game, saved: null, watched: true, notice: "", error: "" };
+}
+
+/** カードがまだサイトから取り直されていない（＝復元しただけ）かどうか。 */
+function isRestored(card: FetchCard): boolean {
+  return card.game.kif === "";
+}
+
+/**
  * ライブ取得できる取得元かどうか（＝「取得 URL」を出せるか）。
  *
  * URL 取り込み・貼り付けは取得元での一意な ID が無く sourceId が毎回新しい UUID
@@ -54,7 +93,11 @@ function isLiveSource(source: string): boolean {
  * 取得タブの状態。タブを切り替えると中身がアンマウントされるため、
  * 入力した URL と取得結果が消えないよう App 側で保持する。
  *
- * ディスクへの永続化はしない（アプリを閉じればクリアされる）。
+ * **カードは DB（watches）にも残る。** 2日制の対局では翌日また中継の URL を
+ * 貼り直すことになるので、再起動してもカードが並び直すようにしてある。
+ * 残すのは「どのサイトのどの棋譜か」と一覧で見分けるためのメタだけで、
+ * **KIF 本文は持たない**（本文は「更新」で取り直す）。
+ * 入力欄（input）は永続化しない。
  */
 type FetchState = {
   input: string;
@@ -76,7 +119,8 @@ const emptyFetchState: FetchState = {
  */
 function mergeCard(cards: FetchCard[], key: string, game: GameDetail): FetchCard[] {
   const i = cards.findIndex((c) => c.key === key);
-  if (i < 0) return [{ key, game, saved: null, notice: "", error: "" }, ...cards];
+  // watched は仮の一覧への登録が済んでから立てる（remember を参照）。
+  if (i < 0) return [{ key, game, saved: null, watched: false, notice: "", error: "" }, ...cards];
   const next = [...cards];
   next[i] = { ...next[i], game, notice: refreshNotice(next[i], game), error: "" };
   return next;
@@ -205,6 +249,26 @@ export default function App() {
   // 保存したら棋譜一覧を読み直させる。
   const [libraryRevision, setLibraryRevision] = useState(0);
 
+  // 起動時に仮の一覧（追跡中の中継）からカードを復元する。
+  //
+  // **ここではサイトへ取りに行かない。** 起動のたびに追跡ぶんの通信が走らない
+  // ようにするためで、中身（KIF 本文）が要るときはカードの「更新」を押す。
+  useEffect(() => {
+    let alive = true;
+    KifuService.Watches()
+      .then((list) => {
+        if (!alive || !list) return;
+        setFetchState((s) => ({ ...s, cards: list.map(cardFromWatch) }));
+      })
+      .catch((e) => {
+        if (!alive) return;
+        setFetchState((s) => ({ ...s, error: `仮の一覧を復元できませんでした: ${errorMessage(e)}` }));
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   return (
     <div className="app">
       <header className="header">
@@ -278,12 +342,32 @@ function FetchTab({
       cards: s.cards.map((c) => (c.key === key ? { ...c, ...p } : c)),
     }));
 
+  /**
+   * 取得したカードを仮の一覧（DB）へ載せる。再起動後はここから復元する。
+   *
+   * 載せ損ねても取得結果は画面に残す（今日の作業は続けられる）。
+   * 再起動すると消えることだけカードに出す。
+   */
+  const remember = async (game: GameDetail) => {
+    const key = cardKey(game);
+    try {
+      await KifuService.Watch(game);
+      patchCard(key, { watched: true });
+    } catch (e) {
+      patchCard(key, {
+        watched: false,
+        error: `仮の一覧に残せませんでした（再起動すると消えます）: ${errorMessage(e)}`,
+      });
+    }
+  };
+
   const handleFetch = async () => {
     setBusy(true);
     patch({ error: "" });
     try {
       const d = await KifuService.Fetch(input);
       setState((s) => ({ ...s, cards: mergeCard(s.cards, cardKey(d), d) }));
+      await remember(d);
     } catch (e) {
       patch({ error: errorMessage(e) });
     } finally {
@@ -300,11 +384,32 @@ function FetchTab({
     try {
       const d = await KifuService.Refresh(card.game.source, card.game.sourceId);
       setState((s) => ({ ...s, cards: mergeCard(s.cards, card.key, d) }));
+      await remember(d);
     } catch (e) {
       patchCard(card.key, { error: errorMessage(e) });
     } finally {
       setPending(null);
     }
+  };
+
+  // 復元した直後は中身が空なので、まとめて取り直せるようにしておく。
+  // 1枚ずつ順に取りに行く（サイトへ同時に投げない）。
+  const handleRefreshAll = async () => {
+    setBusy(true);
+    patch({ error: "" });
+    for (const card of cards) {
+      setPending({ key: card.key, kind: "refresh" });
+      patchCard(card.key, { error: "", notice: "" });
+      try {
+        const d = await KifuService.Refresh(card.game.source, card.game.sourceId);
+        setState((s) => ({ ...s, cards: mergeCard(s.cards, card.key, d) }));
+        await remember(d);
+      } catch (e) {
+        patchCard(card.key, { error: errorMessage(e) });
+      }
+    }
+    setPending(null);
+    setBusy(false);
   };
 
   // 保存は取得し直さず、いま表示している内容をそのまま書き込む。
@@ -314,7 +419,14 @@ function FetchTab({
     patchCard(card.key, { error: "", notice: "" });
     try {
       const rec = await KifuService.Save(card.game);
-      patchCard(card.key, { saved: rec, notice: `保存しました: ${rec.event || rec.sourceId}` });
+      // 終局していれば kicho 側が仮の一覧から外す（もう取り直す必要がないため）。
+      // 対局中はそのまま残る —— 2日制なら翌日も同じカードで追うので消えては困る。
+      const head = `保存しました: ${rec.event || rec.sourceId}`;
+      patchCard(card.key, {
+        saved: rec,
+        watched: rec.finished ? false : card.watched,
+        notice: rec.finished ? `${head}（終局しているので仮の一覧から外しました）` : head,
+      });
       onSaved();
     } catch (e) {
       patchCard(card.key, { error: errorMessage(e) });
@@ -323,8 +435,30 @@ function FetchTab({
     }
   };
 
-  const removeCard = (key: string) =>
-    setState((s) => ({ ...s, cards: s.cards.filter((c) => c.key !== key) }));
+  // カードを閉じるときは仮の一覧からも外す（保存済みの棋譜は消えない）。
+  // 外さずに閉じると、再起動したときに戻ってきてしまう。
+  const removeCard = async (card: FetchCard) => {
+    if (card.watched) {
+      try {
+        await KifuService.Unwatch(card.game.source, card.game.sourceId);
+      } catch (e) {
+        patchCard(card.key, { error: errorMessage(e) });
+        return;
+      }
+    }
+    setState((s) => ({ ...s, cards: s.cards.filter((c) => c.key !== card.key) }));
+  };
+
+  // クリアは仮の一覧ごと捨てる（画面から消しただけでは再起動で戻ってくる）。
+  const handleClear = async () => {
+    try {
+      await KifuService.UnwatchAll();
+    } catch (e) {
+      patch({ error: errorMessage(e) });
+      return;
+    }
+    setState(emptyFetchState);
+  };
 
   return (
     <section>
@@ -333,6 +467,13 @@ function FetchTab({
         対局中に随時更新される中継から取得します。取得した内容を確認してから保存します。
         取得するたびにカードが増えるので、複数の対局を並べて追えます
         （同じ棋譜を取り直したときはそのカードが最新化されます）。
+      </p>
+      <p className="hint">
+        <strong>カードは終了しても残ります。</strong>2日制の対局で翌日また URL を貼り直さずに
+        済むよう、「どのサイトのどの棋譜か」を覚えておきます（棋譜そのものではありません）。
+        復元したカードは中身が空なので「更新」でサイトから取り直してください。
+        追うのをやめるときはカードの「削除」で外します
+        （<strong>保存済みの棋譜は消えません</strong>）。終局した棋譜を保存したときは自動で外れます。
       </p>
       <ul className="hint">
         <li>
@@ -359,9 +500,16 @@ function FetchTab({
           取得
         </button>
         <button
-          onClick={() => setState(emptyFetchState)}
+          onClick={handleRefreshAll}
+          disabled={busy || cards.length === 0}
+          title="並んでいるカードを順にサイトから取り直す（復元した直後に使う）"
+        >
+          すべて更新
+        </button>
+        <button
+          onClick={handleClear}
           disabled={busy || (!input && cards.length === 0)}
-          title="入力と取得したカードをすべてクリアする"
+          title="入力とカードをすべて捨てる（仮の一覧も空にする。保存済みの棋譜は消えない）"
         >
           クリア
         </button>
@@ -377,7 +525,7 @@ function FetchTab({
           pending={pending?.key === card.key ? pending.kind : null}
           onRefresh={() => handleRefresh(card)}
           onSave={() => handleSave(card)}
-          onRemove={() => removeCard(card.key)}
+          onRemove={() => removeCard(card)}
         />
       ))}
     </section>
@@ -403,6 +551,8 @@ function FetchCardView({
 }) {
   const { game, saved, notice, error } = card;
   const busy = pending !== null;
+  // 復元しただけで、まだサイトから取り直していないカード（本文が無い）。
+  const restored = isRestored(card);
 
   return (
     <div className="preview">
@@ -410,6 +560,11 @@ function FetchCardView({
         <h3>
           {game.event || "(棋戦名なし)"}
           <span className="source-tag">{SOURCE_LABELS[game.source] || game.source}</span>
+          {!card.watched && (
+            <span className="source-tag" title="再起動しても復元されません">
+              仮の一覧に無し
+            </span>
+          )}
         </h3>
         <span className="row card-actions">
           <button
@@ -432,7 +587,15 @@ function FetchCardView({
 
       <GamePreview game={game} showTitle={false} />
 
-      {!game.finished && (
+      {restored && (
+        <p className="hint">
+          前回の内容から復元しました。<strong>棋譜本文はまだありません</strong>
+          （覚えているのはどのサイトのどの棋譜かだけです）。「更新」を押すとサイトから
+          取り直し、保存できるようになります。
+        </p>
+      )}
+
+      {!restored && !game.finished && (
         <p className="hint">
           まだ終局していません。保存はいま表示している内容をそのまま書き込むので、
           最新の棋譜を保存したいときは先に「更新」を押してください
@@ -445,7 +608,12 @@ function FetchCardView({
       {notice && <p className="notice">{notice}</p>}
 
       <div className="row">
-        <button className="primary" onClick={onSave} disabled={busy}>
+        <button
+          className="primary"
+          onClick={onSave}
+          disabled={busy || restored}
+          title={restored ? "先に「更新」でサイトから取り直してください" : undefined}
+        >
           {pending === "save" ? "保存中…" : saved ? "保存し直す" : "この内容を保存"}
         </button>
         {saved && (
@@ -491,7 +659,7 @@ function GamePreview({ game, showTitle = true }: { game: GameDetail; showTitle?:
       </dl>
       <details>
         <summary>KIF を表示</summary>
-        <pre className="kif">{game.kif}</pre>
+        <pre className="kif">{game.kif || "（未取得）"}</pre>
       </details>
     </>
   );
