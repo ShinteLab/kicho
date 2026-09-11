@@ -87,7 +87,7 @@ kicho の Wails サービスも ikkyoku も蔵書操作をそこから直接呼�
 | `Save(ctx, Fetched)` | 取得済みを保存。**`source_url` と手数はここが決め直す** |
 | `Count` / `Search` / `Get` / `Delete` | 蔵書 |
 | `Watches` / `Watch(ctx, Fetched)` / `Unwatch` / `UnwatchAll` | **仮の一覧**（追跡中の中継。後述） |
-| `RefetchableURL(source, url)` | その `source_url` を取りに行けば同じ棋譜が取れるか |
+| `RefetchableURL(source, url)` | その `source_url` を `Fetch` に渡せば同じ棋譜が取れるか（⚠️ **取れないのは貼り付けだけ**。2026-09-12。読売も**ビューアの URL から取り直せる** —— .kif を置いていないのは変わらないが、`Fetch` が ID に解決する） |
 
 `Fetched` が取得結果の共通形で、**取得元が違っても同じ形**になる
 （読売＝構造化データから組み立て／連盟＝配信されている `.kif` が原本、の違いは

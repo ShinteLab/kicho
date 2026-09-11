@@ -137,14 +137,24 @@ func countMoves(kifText string) int {
 // ⚠️ **この判断は kicho が持つ。呼び出し側に書かないこと。** 取り直せない URL を
 // 「再読み込み」の口として画面に出すと、押すと必ず失敗するボタンになる。
 //
-//	shogilive … 中継ページ(HTML)。**そこに置かれた .kif を辿れる**ので取り直せる
+//	shogilive … 中継ページ(HTML)。`Fetch` が棋譜 ID に解決して取り直せる
+//	yomiuri   … 棋譜ビューアの URL。`Fetch` が ID を取り出して取り直せる
 //	url       … 指定された .kif そのもの。取り直せる
-//	yomiuri   … ⚠️ **取り直せない。** あちらは Nuxt のページで .kif を置いておらず、
-//	            KIF は構造化データ(_payload.js)から組み立てている。
-//	            取り直す口は Library.Refresh のほう
-//	paste     … 取得元が無い(空のまま)
+//	paste     … ⚠️ **取り直せない。** 取得元が無い(空のまま)
+//
+// ⚠️ **読売を「取り直せない」に戻さないこと**（2026-09-12 に変えた）。
+// **読売が .kif を置いていないのは今も同じ**だが、判定の中身が
+// 「その URL を .kif として読めるか」から**「`Fetch` にその URL を渡せば
+// 同じ棋譜が取れるか」**に変わった。`Fetch` は yomiuri.co.jp の URL を
+// 棋譜 ID に解決してペイロードから組み立て直すので、**ビューアの URL を
+// 渡せば取り直せる。**
+//
+// これが効くのは**利用側の「再読み込み」**（ikkyoku の解析タブ）。あちらは
+// **食い違ったところから先だけを差し替えて検討の枝と評価値を残す**ので、
+// ここで空を返すと「中継を追いながら検討する」流れでは
+// **カードの更新 → 解析（根ごと入れ替え＝評価値が全部消える）しか手が無くなる。**
 func RefetchableURL(source, sourceURL string) string {
-	if source == store.SourceYomiuri {
+	if source == store.SourcePaste {
 		return ""
 	}
 	return sourceURL

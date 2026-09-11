@@ -210,13 +210,15 @@ func TestSearchIsBounded(t *testing.T) {
 
 // 「再読み込みで取り直せる URL か」の判断は kicho が持つこと。
 //
-// 読売は .kif を置いておらず KIF を構造化データから組み立てているので、
-// source_url を取りに行っても棋譜は得られない。
+// ⚠️ **判定は「`Fetch` にその URL を渡せば同じ棋譜が取れるか」**（2026-09-12）。
+// 「その URL を .kif として読めるか」ではない —— 読売は .kif を置いていないが、
+// `Fetch` がビューアの URL を棋譜 ID に解決するので取り直せる。
+// **取り直せないのは貼り付けだけ**（取得元が無い）。
 func TestRefetchableURL(t *testing.T) {
 	tests := []struct {
 		source, url, want string
 	}{
-		{store.SourceYomiuri, "https://www.yomiuri.co.jp/kifu/s/abc/", ""},
+		{store.SourceYomiuri, "https://www.yomiuri.co.jp/kifu/s/abc/", "https://www.yomiuri.co.jp/kifu/s/abc/"},
 		{store.SourceShogiLive, "http://live.shogi.or.jp/oui/kifu/67/x.html", "http://live.shogi.or.jp/oui/kifu/67/x.html"},
 		{store.SourceURL, "https://example.com/a.kif", "https://example.com/a.kif"},
 		{store.SourcePaste, "", ""},
