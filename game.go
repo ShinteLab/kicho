@@ -83,12 +83,12 @@ func fromYomiuri(g *scrape.Game) Fetched {
 //
 // 本文は**サイトが配信している原本のまま**運ぶ（整形し直さない）。
 // 画面に出すメタデータだけ解析結果から取る。
-func (l *Library) fromShogiLive(g *scrape.LiveKifu) Fetched {
-	f := fromDocument(g.Doc, store.SourceShogiLive, "", g.KIF, g.Encoding)
-	f.SourceID = g.SourceID
+func (f *Fetcher) fromShogiLive(g *scrape.LiveKifu) Fetched {
+	got := fromDocument(g.Doc, store.SourceShogiLive, "", g.KIF, g.Encoding)
+	got.SourceID = g.SourceID
 	// 諸元: どこから取ったか。人が開いて確認するのは .kif ではなく中継ページ。
-	f.SourceURL = l.shogilive.ViewerURL(g.SourceID)
-	return f
+	got.SourceURL = f.shogilive.ViewerURL(g.SourceID)
+	return got
 }
 
 // fromDocument は解析結果を Fetched にする。

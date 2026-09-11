@@ -140,15 +140,22 @@ func TestFetchRejectsEmptyInput(t *testing.T) {
 	}
 }
 
-// Refresh は取り直せない取得元を弾くこと（url / paste は一意な ID を持たない）。
-func TestRefreshRejectsImportedSources(t *testing.T) {
+// Refresh が弾くのは paste だけ（2026-09-12）。
+//
+// ⚠️ **url を弾かないことが要点。** あちらの sourceID は取得に使った URL
+// そのものなので（`sourceIDForURL`）、もう一度そこへ行けば取り直せる。
+// ここを「取り込み系はまとめて弾く」に戻すと、**.kif の URL のカードが
+// 「更新」できなくなる。**
+func TestRefreshRejectsPasteOnly(t *testing.T) {
 	lib := newTestLibrary(t)
 	ctx := context.Background()
 
-	for _, src := range []string{store.SourceURL, store.SourcePaste} {
-		if _, err := lib.Refresh(ctx, src, "id"); !errors.Is(err, ErrUnsupportedSource) {
-			t.Errorf("%s: err = %v, want ErrUnsupportedSource", src, err)
-		}
+	if _, err := lib.Refresh(ctx, store.SourcePaste, "id"); !errors.Is(err, ErrUnsupportedSource) {
+		t.Errorf("paste: err = %v, want ErrUnsupportedSource", err)
+	}
+	// url は「取り直せない取得元」ではない（取りに行って失敗するのは別の話）。
+	if _, err := lib.Refresh(ctx, store.SourceURL, "id"); errors.Is(err, ErrUnsupportedSource) {
+		t.Errorf("url を取り直せない扱いにしている: err = %v", err)
 	}
 	if _, err := lib.Refresh(ctx, store.SourceYomiuri, " "); !errors.Is(err, ErrNoInput) {
 		t.Errorf("空の棋譜 ID: err = %v, want ErrNoInput", err)

@@ -19,12 +19,15 @@ import (
 )
 
 // Library は棋譜の取得・保存・配信をまとめたもの。
+//
+// ⚠️ **取得は `Fetcher` に切り出して埋め込んである**（2026-09-12）。
+// `Library.Fetch` などは今までどおり呼べるが、**DB が要らない取得だけを
+// したい側は `NewFetcher()` を使える**（詳しくは `Fetcher`）。
 type Library struct {
-	store     *store.Store
-	yomiuri   *scrape.Yomiuri
-	shogilive *scrape.ShogiLive
-	server    *httpapi.Server
-	logger    *slog.Logger
+	*Fetcher
+	store  *store.Store
+	server *httpapi.Server
+	logger *slog.Logger
 }
 
 // Open は棋譜 DB を開いて Library を作る。dbPath が空なら既定の保存先を使う。
@@ -43,14 +46,12 @@ func Open(dbPath string, logger *slog.Logger) (*Library, error) {
 	if err != nil {
 		return nil, err
 	}
-	y := scrape.NewYomiuri()
-	sl := scrape.NewShogiLive()
+	f := NewFetcher()
 	return &Library{
-		store:     st,
-		yomiuri:   y,
-		shogilive: sl,
-		server:    httpapi.New(st, y, sl, logger),
-		logger:    logger,
+		Fetcher: f,
+		store:   st,
+		server:  httpapi.New(st, f.yomiuri, f.shogilive, logger),
+		logger:  logger,
 	}, nil
 }
 
@@ -232,8 +233,16 @@ func (l *Library) resolveSource(source, sourceID, sourceURL string) (string, str
 	case store.SourceYomiuri, "":
 		// 取得元が入っていない古い画面状態でも読売として扱えるようにしておく。
 		return store.SourceYomiuri, scrape.ViewerURL(sourceID), nil
-	case store.SourceURL, store.SourcePaste:
-		// 取り込み系は貼られた URL をそのまま残す（貼り付けは空）。
+	case store.SourceURL:
+		// 貼られた URL をそのまま残す。⚠️ **空なら sourceID で補う** ——
+		// url の sourceID は URL そのものなので（`sourceIDForURL`）、
+		// 画面から諸元が落ちてきても諸元を失わない。
+		if strings.TrimSpace(sourceURL) == "" {
+			return source, sourceID, nil
+		}
+		return source, sourceURL, nil
+	case store.SourcePaste:
+		// 貼り付けは取得元が無いので空のまま。
 		return source, sourceURL, nil
 	default:
 		return "", "", fmt.Errorf("%w: %s", ErrUnsupportedSource, source)
