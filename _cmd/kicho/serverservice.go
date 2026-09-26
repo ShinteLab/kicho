@@ -146,6 +146,8 @@ func (s *ServerService) SourceURLs(source, sourceID string) ([]string, error) {
 	switch source {
 	case store.SourceShogiLive:
 		return s.urlsFor(httpapi.ShogiLiveKifuPath(sourceID))
+	case store.SourceShogiDB2:
+		return s.urlsFor(httpapi.ShogiDB2KifuPath(sourceID))
 	case store.SourceYomiuri, "":
 		return s.urlsFor(httpapi.RyuohKifuPath(sourceID))
 	default:

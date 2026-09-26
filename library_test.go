@@ -140,15 +140,22 @@ func TestFetchRejectsEmptyInput(t *testing.T) {
 	}
 }
 
-// Refresh は取り直せない取得元を弾くこと（url / paste は一意な ID を持たない）。
-func TestRefreshRejectsImportedSources(t *testing.T) {
+// Refresh が弾くのは paste だけ（2026-09-12）。
+//
+// ⚠️ **url を弾かないことが要点。** あちらの sourceID は取得に使った URL
+// そのものなので（`sourceIDForURL`）、もう一度そこへ行けば取り直せる。
+// ここを「取り込み系はまとめて弾く」に戻すと、**.kif の URL のカードが
+// 「更新」できなくなる。**
+func TestRefreshRejectsPasteOnly(t *testing.T) {
 	lib := newTestLibrary(t)
 	ctx := context.Background()
 
-	for _, src := range []string{store.SourceURL, store.SourcePaste} {
-		if _, err := lib.Refresh(ctx, src, "id"); !errors.Is(err, ErrUnsupportedSource) {
-			t.Errorf("%s: err = %v, want ErrUnsupportedSource", src, err)
-		}
+	if _, err := lib.Refresh(ctx, store.SourcePaste, "id"); !errors.Is(err, ErrUnsupportedSource) {
+		t.Errorf("paste: err = %v, want ErrUnsupportedSource", err)
+	}
+	// url は「取り直せない取得元」ではない（取りに行って失敗するのは別の話）。
+	if _, err := lib.Refresh(ctx, store.SourceURL, "id"); errors.Is(err, ErrUnsupportedSource) {
+		t.Errorf("url を取り直せない扱いにしている: err = %v", err)
 	}
 	if _, err := lib.Refresh(ctx, store.SourceYomiuri, " "); !errors.Is(err, ErrNoInput) {
 		t.Errorf("空の棋譜 ID: err = %v, want ErrNoInput", err)
@@ -203,13 +210,15 @@ func TestSearchIsBounded(t *testing.T) {
 
 // 「再読み込みで取り直せる URL か」の判断は kicho が持つこと。
 //
-// 読売は .kif を置いておらず KIF を構造化データから組み立てているので、
-// source_url を取りに行っても棋譜は得られない。
+// ⚠️ **判定は「`Fetch` にその URL を渡せば同じ棋譜が取れるか」**（2026-09-12）。
+// 「その URL を .kif として読めるか」ではない —— 読売は .kif を置いていないが、
+// `Fetch` がビューアの URL を棋譜 ID に解決するので取り直せる。
+// **取り直せないのは貼り付けだけ**（取得元が無い）。
 func TestRefetchableURL(t *testing.T) {
 	tests := []struct {
 		source, url, want string
 	}{
-		{store.SourceYomiuri, "https://www.yomiuri.co.jp/kifu/s/abc/", ""},
+		{store.SourceYomiuri, "https://www.yomiuri.co.jp/kifu/s/abc/", "https://www.yomiuri.co.jp/kifu/s/abc/"},
 		{store.SourceShogiLive, "http://live.shogi.or.jp/oui/kifu/67/x.html", "http://live.shogi.or.jp/oui/kifu/67/x.html"},
 		{store.SourceURL, "https://example.com/a.kif", "https://example.com/a.kif"},
 		{store.SourcePaste, "", ""},
