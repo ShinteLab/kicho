@@ -40,6 +40,7 @@ type FetchCard = {
 const SOURCE_LABELS: Record<string, string> = {
   yomiuri: "読売（竜王戦）",
   shogilive: "将棋連盟 中継",
+  shogidb2: "将棋DB2",
 };
 
 /** カードの識別子。取得元ごとに棋譜 ID の形が違うので取得元も含める。 */
@@ -482,6 +483,9 @@ function FetchTab({
         <li>
           <strong>将棋連盟の中継</strong>: <code>live.shogi.or.jp</code> の中継ページ URL（
           <code>.html</code>）または <code>.kif</code> の URL
+        </li>
+        <li>
+          <strong>将棋DB2</strong>: <code>shogidb2.com/games/…</code> の対局ページ URL
         </li>
       </ul>
 

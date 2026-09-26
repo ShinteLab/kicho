@@ -24,11 +24,16 @@ import (
 type Fetcher struct {
 	yomiuri   *scrape.Yomiuri
 	shogilive *scrape.ShogiLive
+	shogidb2  *scrape.ShogiDB2
 }
 
 // NewFetcher は取得だけを行う Fetcher を作る（DB は要らない）。
 func NewFetcher() *Fetcher {
-	return &Fetcher{yomiuri: scrape.NewYomiuri(), shogilive: scrape.NewShogiLive()}
+	return &Fetcher{
+		yomiuri:   scrape.NewYomiuri(),
+		shogilive: scrape.NewShogiLive(),
+		shogidb2:  scrape.NewShogiDB2(),
+	}
 }
 
 // Fetch は棋譜を取得する（**保存はしない**）。
@@ -37,6 +42,7 @@ func NewFetcher() *Fetcher {
 // 呼び出し側に「どのサイトならどちら」を書かせない。
 //
 //   - live.shogi.or.jp の URL  → 日本将棋連盟の棋譜中継
+//   - shogidb2.com の URL      → 将棋DB2
 //   - yomiuri.co.jp の URL     → 読売（竜王戦）
 //   - それ以外の http(s) URL   → **その中身を .kif として読む**（HTML なら辿る）
 //   - URL でない文字列         → 読売の棋譜 ID
@@ -60,6 +66,15 @@ func (f *Fetcher) Fetch(ctx context.Context, input string) (Fetched, error) {
 			return Fetched{}, err
 		}
 		return f.fetchShogiLive(ctx, id)
+	}
+	// ⚠️ **汎用の URL より先に振り分けること。** 将棋DB2 のページは HTML で、
+	// .kif へのリンクも持たないので、汎用の口に落ちると「KIF ではない」で終わる。
+	if scrape.IsShogiDB2URL(in) {
+		id, err := scrape.ShogiDB2GameID(in)
+		if err != nil {
+			return Fetched{}, err
+		}
+		return f.fetchShogiDB2(ctx, id)
 	}
 	// 中継として知っているサイト以外の URL は、中身をそのまま棋譜として読む。
 	if isHTTPURL(in) && !scrape.IsYomiuriURL(in) {
@@ -92,6 +107,8 @@ func (f *Fetcher) Refresh(ctx context.Context, source, sourceID string) (Fetched
 	switch source {
 	case store.SourceShogiLive:
 		return f.fetchShogiLive(ctx, sourceID)
+	case store.SourceShogiDB2:
+		return f.fetchShogiDB2(ctx, sourceID)
 	case store.SourceYomiuri, "":
 		return f.fetchRyuoh(ctx, sourceID)
 	case store.SourceURL:
@@ -188,6 +205,15 @@ func (f *Fetcher) fetchShogiLive(ctx context.Context, id string) (Fetched, error
 		return Fetched{}, err
 	}
 	return f.fromShogiLive(g), nil
+}
+
+// fetchShogiDB2 は将棋DB2 の構造化データから KIF を組み立てる（保存はしない）。
+func (f *Fetcher) fetchShogiDB2(ctx context.Context, id string) (Fetched, error) {
+	g, err := f.shogidb2.FetchGame(ctx, id)
+	if err != nil {
+		return Fetched{}, err
+	}
+	return f.fromShogiDB2(g), nil
 }
 
 // resolveRyuohInput は入力（対局ページ URL / 棋譜ビューア URL / 棋譜 ID）を

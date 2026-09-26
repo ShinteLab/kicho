@@ -14,7 +14,7 @@ import (
 // 見分けるための最小限のメタだけ。棋譜そのものを残すのは Save（games）の役目で、
 // こちらは**2日制の対局で翌日また URL を貼り直さずに済むようにする**ためのもの。
 type Watch struct {
-	// Source は取得元(SourceYomiuri / SourceShogiLive)。
+	// Source は取得元(SourceYomiuri / SourceShogiLive / SourceShogiDB2 / SourceURL)。
 	Source string
 	// SourceID は取得元での ID。ここへ取り直しに行けるものだけを入れる。
 	SourceID string

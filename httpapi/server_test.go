@@ -91,7 +91,7 @@ const sampleLiveKIF = `# --- Kifu for Windows Pro V7.20 棋譜ファイル ---
    1 ７六歩(77)   ( 0:16/00:00:16)
 `
 
-func newTestServerWithLive(t *testing.T, f Fetcher, live LiveFetcher) (*Server, *store.Store, string) {
+func newTestServerWithLive(t *testing.T, f Fetcher, live LiveFetcher, opts ...func(*Server)) (*Server, *store.Store, string) {
 	t.Helper()
 
 	st, err := store.Open(filepath.Join(t.TempDir(), "kicho.db"))
@@ -102,6 +102,9 @@ func newTestServerWithLive(t *testing.T, f Fetcher, live LiveFetcher) (*Server, 
 
 	logger := slog.New(slog.DiscardHandler)
 	s := New(st, f, live, logger)
+	for _, o := range opts {
+		o(s)
+	}
 
 	// ポート 0 で空きポートを取らせる。
 	if err := s.Start(Config{Host: LoopbackHost, Port: 0}); err != nil {
@@ -437,6 +440,34 @@ func TestShogiLivePathReachesTheRoute(t *testing.T) {
 		t.Errorf("fetched ids = %q, want [%q]", live.ids, id)
 	}
 	// 対局中は随時更新されるのでキャッシュさせない。
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+}
+
+// 将棋DB2 の経路とパス組み立て。付けていなければ 501。
+func TestShogiDB2PathReachesTheRoute(t *testing.T) {
+	const id = "3186d1e7f8f33242990b1e853f53250d443dbe25132936b005068009a201"
+	p := ShogiDB2KifuPath(id)
+
+	_, _, bare := newTestServerWithLive(t, &fakeFetcher{game: sampleFetchedGame()}, nil)
+	if resp, _ := get(t, bare+p); resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("取得元なしで GET %s = %d, want 501", p, resp.StatusCode)
+	}
+
+	db2 := &fakeLiveFetcher{kif: sampleLiveKIF}
+	_, _, base := newTestServerWithLive(t, &fakeFetcher{game: sampleFetchedGame()}, nil,
+		func(s *Server) { s.WithShogiDB2(db2) })
+	resp, body := get(t, base+p)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s = %d, want 200", p, resp.StatusCode)
+	}
+	if !strings.Contains(body, "棋戦：中継テスト棋戦") {
+		t.Errorf("body = %q", body)
+	}
+	if len(db2.ids) != 1 || db2.ids[0] != id {
+		t.Errorf("fetched ids = %q, want [%q]", db2.ids, id)
+	}
 	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store", got)
 	}

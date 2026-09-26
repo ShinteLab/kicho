@@ -91,6 +91,31 @@ func (f *Fetcher) fromShogiLive(g *scrape.LiveKifu) Fetched {
 	return got
 }
 
+// fromShogiDB2 は将棋DB2 の棋譜を Fetched にする。
+//
+// 読売と同じく**構造化データから組み立てた KIF が原本**（サイトの KIF は
+// 消費時間を 0:00 で埋めた作り物なので使っていない）。メタデータもデータの値を使う。
+func (f *Fetcher) fromShogiDB2(g *scrape.ShogiDB2Game) Fetched {
+	return Fetched{
+		Source:   store.SourceShogiDB2,
+		SourceID: g.SourceID,
+		// 諸元: どこから取ったか。対局ページの URL。
+		SourceURL: f.shogidb2.GameURL(g.SourceID),
+		Event:     g.Event,
+		Handicap:  g.Handicap,
+		Place:     g.Place,
+		Black:     g.Black,
+		White:     g.White,
+		StartedAt: g.StartedAt,
+		EndMark:   g.EndMark,
+		Moves:     len(g.Moves),
+
+		KIF:      g.KIF(),
+		Format:   string(format.KIF),
+		Encoding: EncodingUTF8,
+	}
+}
+
 // fromDocument は解析結果を Fetched にする。
 //
 // **KIF は解析結果を組み立て直したものではなく原本（body）をそのまま入れる。**
@@ -139,6 +164,7 @@ func countMoves(kifText string) int {
 //
 //	shogilive … 中継ページ(HTML)。`Fetch` が棋譜 ID に解決して取り直せる
 //	yomiuri   … 棋譜ビューアの URL。`Fetch` が ID を取り出して取り直せる
+//	shogidb2  … 対局ページの URL。`Fetch` が ID を取り出して取り直せる
 //	url       … 指定された .kif そのもの。取り直せる
 //	paste     … ⚠️ **取り直せない。** 取得元が無い(空のまま)
 //

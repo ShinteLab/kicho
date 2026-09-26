@@ -37,6 +37,9 @@ const (
 	// SourceID は中継のパス(拡張子なし。例 "oui/kifu/67/oui202607290101")で、
 	// 読売と同じく取り直しても同じ棋譜として更新される。
 	SourceShogiLive = "shogilive"
+	// SourceShogiDB2 は将棋DB2(shogidb2.com)。SourceID は対局ページの
+	// `/games/{id}` のハッシュで、取り直しても同じ棋譜として更新される。
+	SourceShogiDB2 = "shogidb2"
 	// SourceURL は任意の URL から KIF を取得したもの。
 	SourceURL = "url"
 	// SourcePaste は KIF テキストを直接貼り付けたもの。
@@ -45,7 +48,7 @@ const (
 
 // Game は保存する棋譜1局分。KIF テキストは組み立て済みのものを受け取る。
 type Game struct {
-	Source   string // 取得元(SourceYomiuri / SourceShogiLive / SourceURL / SourcePaste)
+	Source   string // 取得元(SourceYomiuri / SourceShogiLive / SourceShogiDB2 / SourceURL / SourcePaste)
 	SourceID string // 取得元での ID
 	// SourceURL は取得元の URL(URL 取り込みのみ。出所を残すため)。
 	SourceURL string

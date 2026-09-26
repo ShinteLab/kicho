@@ -79,6 +79,7 @@ type Server struct {
 	store     *store.Store
 	fetcher   Fetcher
 	shogilive LiveFetcher
+	shogidb2  LiveFetcher
 	logger    *slog.Logger
 
 	mu   sync.Mutex
@@ -92,6 +93,13 @@ func New(st *store.Store, f Fetcher, live LiveFetcher, logger *slog.Logger) *Ser
 		logger = slog.Default()
 	}
 	return &Server{store: st, fetcher: f, shogilive: live, logger: logger}
+}
+
+// WithShogiDB2 は将棋DB2 の取得元を付ける(付けなければ /shogidb2/kifu/ は 501)。
+// Start より前に呼ぶこと。
+func (s *Server) WithShogiDB2(f LiveFetcher) *Server {
+	s.shogidb2 = f
+	return s
 }
 
 // Start は待ち受けを開始する。既に起動している場合はエラー。
@@ -180,6 +188,11 @@ func ShogiLiveKifuPath(sourceID string) string {
 	return "/shogilive/kifu/" + strings.Join(parts, "/")
 }
 
+// ShogiDB2KifuPath は将棋DB2 から直接取得するパスを返す(対局ページの /games/{id} の id)。
+func ShogiDB2KifuPath(sourceID string) string {
+	return "/shogidb2/kifu/" + url.PathEscape(sourceID)
+}
+
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 
@@ -192,7 +205,10 @@ func (s *Server) routes() http.Handler {
 
 	// 日本将棋連盟の中継から直取得。棋譜 ID がパス("oui/kifu/67/...")なので
 	// スラッシュを含む。`{id...}` で残り全部を受ける。
-	mux.HandleFunc("GET /shogilive/kifu/{id...}", s.handleShogiLiveKifu)
+	mux.HandleFunc("GET /shogilive/kifu/{id...}", s.handleLiveKifu("shogilive", func() LiveFetcher { return s.shogilive }))
+
+	// 将棋DB2 から直取得。サイトは KIF を配っていないので kicho が組み立てたものを返す。
+	mux.HandleFunc("GET /shogidb2/kifu/{id}", s.handleLiveKifu("shogidb2", func() LiveFetcher { return s.shogidb2 }))
 
 	mux.HandleFunc("GET /", s.handleIndex)
 	return mux
@@ -310,24 +326,28 @@ func (s *Server) handleRyuohKifu(w http.ResponseWriter, r *http.Request) {
 	writeKIF(w, "", g.KIF())
 }
 
-// GET /shogilive/kifu/{id...} — 連盟の中継から直接取得して KIF で返す(保存はしない)。
+// GET /shogilive/kifu/{id...} ・ GET /shogidb2/kifu/{id} — 取得元から直接取得して
+// KIF で返す(保存はしない)。
 //
-// サイトは Shift_JIS で配信しているので、ここで **UTF-8 に寄せて**返す。
+// 連盟は Shift_JIS で配信しているので、ここで **UTF-8 に寄せて**返す。
 // 読売と同じくリクエストのたびに取りに行く(キャッシュしない)。
-func (s *Server) handleShogiLiveKifu(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if s.shogilive == nil {
-		writeError(w, http.StatusNotImplemented, "shogilive fetcher is not configured")
-		return
+func (s *Server) handleLiveKifu(name string, fetcher func() LiveFetcher) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		f := fetcher()
+		if f == nil {
+			writeError(w, http.StatusNotImplemented, name+" fetcher is not configured")
+			return
+		}
+		kif, err := f.FetchKifu(r.Context(), id)
+		if err != nil {
+			s.logger.Error("fetch "+name+" kifu", "id", id, "error", err)
+			writeError(w, http.StatusInternalServerError, "kifu error")
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		writeKIF(w, "", kif)
 	}
-	kif, err := s.shogilive.FetchKifu(r.Context(), id)
-	if err != nil {
-		s.logger.Error("fetch shogilive kifu", "id", id, "error", err)
-		writeError(w, http.StatusInternalServerError, "kifu error")
-		return
-	}
-	w.Header().Set("Cache-Control", "no-store")
-	writeKIF(w, "", kif)
 }
 
 // GET /kifu — 保存済み棋譜の一覧を JSON で返す。
@@ -382,6 +402,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		"GET /kifu/{id}           保存済み棋譜 (KIF)",
 		"GET /ryuoh/kifu/{id}     読売(竜王戦)から直接取得 (KIF)",
 		"GET /shogilive/kifu/{id} 日本将棋連盟の中継から直接取得 (KIF)",
+		"GET /shogidb2/kifu/{id}  将棋DB2 から直接取得 (KIF)",
 		"",
 	}, "\n"))
 }

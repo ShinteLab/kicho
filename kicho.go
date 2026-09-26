@@ -50,7 +50,7 @@ func Open(dbPath string, logger *slog.Logger) (*Library, error) {
 	return &Library{
 		Fetcher: f,
 		store:   st,
-		server:  httpapi.New(st, f.yomiuri, f.shogilive, logger),
+		server:  httpapi.New(st, f.yomiuri, f.shogilive, logger).WithShogiDB2(f.shogidb2),
 		logger:  logger,
 	}, nil
 }
@@ -230,6 +230,8 @@ func (l *Library) resolveSource(source, sourceID, sourceURL string) (string, str
 	switch source {
 	case store.SourceShogiLive:
 		return source, l.shogilive.ViewerURL(sourceID), nil
+	case store.SourceShogiDB2:
+		return source, l.shogidb2.GameURL(sourceID), nil
 	case store.SourceYomiuri, "":
 		// 取得元が入っていない古い画面状態でも読売として扱えるようにしておく。
 		return store.SourceYomiuri, scrape.ViewerURL(sourceID), nil

@@ -284,12 +284,13 @@ FTS のクエリは `escapeFTS` でフレーズとしてくくる（`OR` や `NE
 検索語として入力されても構文エラーにしないため）。`LIKE` 側は `escapeLike` で
 `%` `_` を無効化する。
 
-## 棋譜の入り口は4つ
+## 棋譜の入り口は5つ
 
 | 入り口 | source | source_id | 重複 |
 |---|---|---|---|
 | 読売（竜王戦）の中継（取得タブ） | `yomiuri` | 読売の棋譜 ID | 取り直すと**同じ棋譜を更新** |
 | 日本将棋連盟の中継（取得タブ） | `shogilive` | 中継のパス（拡張子なし） | 取り直すと**同じ棋譜を更新** |
+| 将棋DB2（取得タブ） | `shogidb2` | 対局ページ `/games/{id}` の id | 取り直すと**同じ棋譜を更新** |
 | URL から取得※ | `url` | **正規化した URL**（`sourceIDForURL`） | 取り直すと**同じ棋譜を更新** |
 | KIF を貼り付け（登録タブ） | `paste` | 毎回新しい UUID | **登録のたびに別の棋譜** |
 
@@ -331,6 +332,7 @@ FTS のクエリは `escapeFTS` でフレーズとしてくくる（`OR` や `NE
 
 ```
 live.shogi.or.jp の URL  → 連盟の中継
+shogidb2.com の URL      → 将棋DB2（⚠️ 汎用の URL より先に振り分ける）
 yomiuri.co.jp の URL     → 読売（竜王戦）
 それ以外の http(s) URL   → その中身を .kif として読む（HTML なら辿る）
 URL でない文字列         → 読売の棋譜 ID
@@ -340,7 +342,7 @@ URL でない文字列         → 読売の棋譜 ID
 読売に回していたので、**他サイトの .kif の URL が「読売の棋譜 ID」扱いになり、
 意味の分からないエラーで落ちていた**（利用側はそのぶん「.kif は別の口」という
 2 つ目の入力欄を持つことになっていた）。判別は `scrape.IsShogiLiveURL` /
-`scrape.IsYomiuriURL` で、⚠️ **取得元の知識は kicho の側に置く。**
+`scrape.IsShogiDB2URL` / `scrape.IsYomiuriURL` で、⚠️ **取得元の知識は kicho の側に置く。**
 
 ### 取得は DB を要らない（`Fetcher`）
 
@@ -413,6 +415,7 @@ BOM は `core/kifu` の Parse 側で落とす。
 - 読売スクレイピング → 棋譜ビューアの URL（`scrape.ViewerURL`）
 - 連盟の中継 → 中継ページ（HTML）の URL（`ShogiLive.ViewerURL`）。`.kif` ではなく
   **人が開いて確認できるほう**を残す
+- 将棋DB2 → 対局ページの URL（`ShogiDB2.GameURL`）
 - URL 取り込み → 指定された URL
 - 貼り付け → 空
 
@@ -421,11 +424,13 @@ BOM は `core/kifu` の Parse 側で落とす。
 **ライブ取得とアーカイブは別物として扱う。統合しないこと。**
 
 - **対局中** … 棋譜は随時更新されるので、その都度サイトへ取りに行く。
-  これが `GET /ryuoh/kifu/{id}` `GET /shogilive/kifu/{id}`（保存しない）と UI の「取得」。
+  これが `GET /ryuoh/kifu/{id}` `GET /shogilive/kifu/{id}` `GET /shogidb2/kifu/{id}`
+  （保存しない）と UI の「取得」。
 - **終局後** … 以後サイトへアクセスしなくて済むように DB へ保存する。
   これが `GET /kifu/{id}` と UI の「保存」。
 
-**ライブ取得元は2つ**（読売＝スクレイピング、連盟＝`.kif` の直取得）。
+**ライブ取得元は3つ**（読売＝スクレイピング、連盟＝`.kif` の直取得、
+将棋DB2＝LiveView から構造化データを取る）。
 取り方は違うが、カードに積む・更新する・保存する・ライブ URL を配る、の扱いは同じにしてある。
 `KifuService` が `store.Source*` で分岐し、UI 側は取得元を意識しない
 （カードに取得元のラベルを出すだけ）。
@@ -537,6 +542,7 @@ ShogiHome 等の外部ツールが「URL から棋譜を取得する」機能で
 | `GET /kifu/{id}.{ext}` | その形式に変換して返す。未実装なら **501** |
 | `GET /ryuoh/kifu/{id}` | 読売から直接取得して KIF を返す（**Node 版との互換**。保存はしない） |
 | `GET /shogilive/kifu/{id...}` | 連盟の中継から直接取得して KIF を返す（保存はしない） |
+| `GET /shogidb2/kifu/{id}` | 将棋DB2 から直接取得して KIF を返す（保存はしない） |
 | `GET /` | 使い方の案内 |
 
 `/shogilive/kifu/` だけ `{id...}` のワイルドカード。連盟の棋譜 ID は中継のパス
@@ -608,6 +614,67 @@ ID からは `.kif` / `.html` の URL を組み立て直せる必要がある（
 |---|---|
 | 第２局（終局済み） | `oui/kifu/67/oui202607150101` |
 | 第３局 | `oui/kifu/67/oui202607290101` |
+
+## 将棋DB2（`scrape/shogidb2.go`）
+
+`https://shogidb2.com/games/3186d1e7f8f33242990b1e853f53250d443dbe25132936b005068009a201`
+
+**スクレイピングだが、HTML は読まない。LiveView の `push_event` を取っている。**
+（2026-09-26 に調査）
+
+- `robots.txt` に制限は無い。`.json` / `.kif` / `/api/...` のような直接の口は**無い**（500 / 404）
+- ページは **Phoenix LiveView**。棋譜ダイアログ（`#kifu-modal textarea`）はサーバの HTML では
+  **空**で、「KIF形式」ボタン（`phx-click="kif"`）を押すとサーバが
+  `push_event("kif", {data})` で**構造化データ**を返し、ブラウザの `KifExporter` が文字にしている
+- ⚠️ **サイトの KIF（textarea）は使わない。** 1 手ごとの消費時間を持っていないのに
+  `( 0:00/00:00:00)` で埋めた作り物なので原本扱いできない。こちらは data を取り、
+  **読売と同じく構造化データから KIF を組み立てる**（消費時間の欄は出さない＝`ShowTime:false`）
+
+### 取り方
+
+1. 対局ページを GET。`<meta name="csrf-token">`、LiveView のルート要素
+   （`data-phx-session` を持つ最初の要素）の `id`（`phx-...`）・`data-phx-session`・
+   `data-phx-static`、それと **Set-Cookie** を控える
+2. WebSocket `wss://shogidb2.com/live/websocket?_csrf_token=…&vsn=2.0.0&locale=ja`
+   （Cookie と `Origin: https://shogidb2.com` を付ける）
+3. `["1","1","lv:<id>","phx_join",{url, params:{_csrf_token,_mounts:0,locale}, session, static}]`
+   → ref `"1"` の `phx_reply`
+4. `["1","2","lv:<id>","event",{"type":"click","event":"kif","value":{}}]`
+   → ref `"2"` の `phx_reply` の `response.diff.e` に `["kif",{"data":{…}}]`
+
+WebSocket は**既に依存している `golang.org/x/net/websocket`**（`Config.DialContext`）。
+go.mod を増やさないため。⚠️ 読み書きは ctx を見ないので、**期限を `SetDeadline` に移し、
+取り消しでは `context.AfterFunc` で接続ごと閉じる**（サーバが黙っても必ず抜ける）。
+BaseURL の `http` → `ws` / `https` → `wss` で WebSocket の URL を作るので、
+テストは httptest でページと WebSocket の両方を立てている（実サイトには繋がない）。
+`scrape/testdata/shogidb2_kif_reply.json` が実際の応答。
+
+### 壊れやすい点（取得が壊れたらまずここ）
+
+- **LiveView のプロトコル版 `vsn=2.0.0`**（メッセージが `[join_ref, ref, topic, event, payload]`
+  の配列）。サイトの phoenix_live_view が上がると変わりうる
+- **csrf とセッション Cookie。** どちらかが欠けると join が `unauthorized` / `stale` で弾かれる
+  （エラーには `status` と `response` を載せてある）
+- **イベント名 `kif`** と、返りの `diff.e` に入る形。無ければ「kif イベントがありません」
+- ルート要素の見つけ方（`data-phx-session` を持つ**最初の**要素）
+
+### data から KIF へ
+
+| data | KIF |
+|---|---|
+| `player1` / `player2` | 先手 / 後手（**player1 が先手**。サイトの KifExporter と同じ） |
+| `tournament_detail`（空なら `tournament`） | 棋戦 |
+| `place` / `handicap` | 場所 / 手合割 |
+| `start_at` | 開始日時。⚠️ **UTC で来る**ので JST に直す |
+| `time`（`"４時間"`。全角数字） | 持ち時間（`width.Fold` で半角に寄せて読む） |
+| `moves[].csa`（`"+2726FU"`、最後が `"%TORYO"`） | 指し手 |
+
+指し手は `kifu.StartSFEN(handicap)` → **`kifu.DecodeCSA`**（CSA → USI。終局名も返す）→
+`kifu.FormatMoves`（USI → 日本語表記と移動元）で組み立て、終局名を最後の手に置く。
+⚠️ **CSA は移動後の駒名で成りを書く**ので、成った手か成駒が動いた手かは盤を見ないと
+分からない（`DecodeCSA` が開始局面から進めて判定する。`core/kifu/csa.go`）。
+⚠️ **サイトの `label`（`"▲26歩(27)"`）は使わない** —— 算用数字で KIF の表記ではない。
+1 手ごとの消費時間はデータに無い（`time_consumed` は `"145▲240△240"` の合計だけ）。
 
 ## スクレイピングの仕組み（読売・重要）
 
@@ -731,9 +798,11 @@ KIF に載せるなら `*` 行。`num:0` のコメント（対局前の記述）
 
 ## 未対応 / 今後
 
-- ライブ取得元は**読売（竜王戦）と日本将棋連盟の中継**の2つ。他サイトは未対応。
+- ライブ取得元は**読売（竜王戦）・日本将棋連盟の中継・将棋DB2**の3つ。他サイトは未対応。
   増やすときは `scrape` に足し、`store.Source*` に定数を追加して、
-  `KifuService.Fetch` / `Refresh` / `Save` と `ServerService.SourceURLs` の分岐に加える。
+  `Fetcher.Fetch` / `Refresh` と `Library.resolveSource`、`httpapi` のライブ経路、
+  `ServerService.SourceURLs` の分岐、フロントの `SOURCE_LABELS` に加える
+  （ikkyoku 側の `SOURCE_LABELS` も）。
 - **連盟は棋戦を絞っていない。** ID は中継のパスなので、王位戦以外でも
   中継ページの URL さえ貼れば取れるはず（`oui` 以外は未確認）。
 - **盤面表示は未実装。** kicho が持つのは KIF（漢字表記）で、`@shinte/web` の
