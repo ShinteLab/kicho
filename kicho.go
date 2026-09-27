@@ -20,8 +20,8 @@ import (
 
 // Library は棋譜の取得・保存・配信をまとめたもの。
 //
-// ⚠️ **取得は `Fetcher` に切り出して埋め込んである**（2026-09-12）。
-// `Library.Fetch` などは今までどおり呼べるが、**DB が要らない取得だけを
+// ⚠️ **取得は `Fetcher` に切り出して埋め込んである。**
+// `Library.Fetch` なども呼べるが、**DB が要らない取得だけを
 // したい側は `NewFetcher()` を使える**（詳しくは `Fetcher`）。
 type Library struct {
 	*Fetcher
@@ -68,10 +68,10 @@ func (l *Library) Server() *httpapi.Server { return l.server }
 
 // 蔵書（保存済みの棋譜）を触る口。
 //
-// ⚠️ **`Store()` は公開していない。** 以前は `*store.Store` をそのまま返しており、
-// kicho の Wails サービスも ikkyoku も蔵書操作をそこから直接呼んでいた。
+// ⚠️ **`Store()` は公開していない。** `*store.Store` をそのまま返すと
 // 実質の公開 API が `store` パッケージ全体になり、保存の組み立て（取得元ごとの
-// source_url、文字コードの既定、手数の数え方）が呼び出し側に散った。
+// source_url、文字コードの既定、手数の数え方）が呼び出し側
+// （kicho の Wails サービスと ikkyoku）に散る。
 // **蔵書の操作はここに足すこと。**
 
 // Count は保存件数を返す。

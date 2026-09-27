@@ -14,8 +14,8 @@ import (
 // 諸元（source_url）は取得元から決め直すこと。
 //
 // Fetched は UI を往復してくるので、画面が持っている値をそのまま信じない。
-// 以前は kicho の Wails サービスと ikkyoku がそれぞれ組み立てていて、
-// 片方だけ直せば黙って挙動が割れる状態だった。
+// 使う側（kicho の Wails サービスと ikkyoku）に組み立てさせると、
+// 片方だけ直したときに黙って挙動が割れる。
 func TestSaveDerivesSourceURL(t *testing.T) {
 	lib := newTestLibrary(t)
 	ctx := context.Background()
@@ -140,7 +140,7 @@ func TestFetchRejectsEmptyInput(t *testing.T) {
 	}
 }
 
-// Refresh が弾くのは paste だけ（2026-09-12）。
+// Refresh が弾くのは paste だけ。
 //
 // ⚠️ **url を弾かないことが要点。** あちらの sourceID は取得に使った URL
 // そのものなので（`sourceIDForURL`）、もう一度そこへ行けば取り直せる。
@@ -210,7 +210,7 @@ func TestSearchIsBounded(t *testing.T) {
 
 // 「再読み込みで取り直せる URL か」の判断は kicho が持つこと。
 //
-// ⚠️ **判定は「`Fetch` にその URL を渡せば同じ棋譜が取れるか」**（2026-09-12）。
+// ⚠️ **判定は「`Fetch` にその URL を渡せば同じ棋譜が取れるか」**。
 // 「その URL を .kif として読めるか」ではない —— 読売は .kif を置いていないが、
 // `Fetch` がビューアの URL を棋譜 ID に解決するので取り直せる。
 // **取り直せないのは貼り付けだけ**（取得元が無い）。

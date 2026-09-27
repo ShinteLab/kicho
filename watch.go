@@ -32,9 +32,8 @@ func (l *Library) Watches(ctx context.Context) ([]store.Watch, error) {
 // カードを作らないための蓋で、判定は `Refresh` が受け付ける取得元と揃えてある。
 // **paste だけが載らない**（取得元が無い）。
 //
-// ⚠️ **url も載る**（2026-09-12）。あちらの sourceId は URL そのものになったので
-// （`sourceIDForURL`）、そこへ取り直しに行ける。以前は毎回 UUID だったため
-// 除いていた。
+// ⚠️ **url も載る。** あちらの sourceId は URL そのものなので
+// （`sourceIDForURL`）、そこへ取り直しに行ける。
 //
 // 諸元(source_url)は Save と同じく取得元から決め直す（画面の値を信じない）。
 func (l *Library) Watch(ctx context.Context, f Fetched) (store.Watch, error) {

@@ -44,10 +44,9 @@ func (l *Library) ImportKIF(ctx context.Context, text string) (store.Record, err
 // 他サイトの .kif ファイルや、別の kicho の /kifu/{id} を取り込める。
 // 棋譜中継ページ(HTML)の URL を渡した場合はそこから .kif を辿る。
 //
-// ⚠️ **同じ URL を取り込み直しても増えない**（2026-09-12）。取得も ID の決め方も
-// `fetchURL` に寄せて `Save` を通すので、`(source, source_id)` の upsert に乗る。
-// 以前はここだけ `importDocument` を通しており、**登録のたびに UUID を振って
-// 別の棋譜として増えていた。**
+// ⚠️ **同じ URL を取り込み直しても増えない。** 取得も ID の決め方も
+// `fetchURL` に寄せて `Save` を通すので、`(source, source_id)` の upsert に乗る
+// （`importDocument` を通すと登録のたびに UUID が振られて別の棋譜として増える）。
 func (l *Library) ImportURL(ctx context.Context, rawURL string) (store.Record, error) {
 	got, err := l.fetchURL(ctx, rawURL)
 	if err != nil {
@@ -128,7 +127,7 @@ func ParseKIF(text string) (kifu.Document, error) {
 // importDocument は棋譜テキストを解析してメタデータを取り出し、
 // **本文は原本のまま**保存する。
 //
-// ⚠️ **通るのは貼り付け（paste）だけ**（2026-09-12）。URL からの取り込みは
+// ⚠️ **通るのは貼り付け（paste）だけ**。URL からの取り込みは
 // `fetchURL` + `Save` を通る（あちらは URL を鍵にできるので増えない）。
 // **ここへ url を戻さないこと。**
 //

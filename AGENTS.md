@@ -24,8 +24,7 @@ kicho（棋帳）。棋譜を取得して保存し、外部ツールへ HTTP で
   `ikkyoku/app/kifufetch.go`）、それに `Fetched` / `RefetchableURL` /
   `MaxSearchRows` / sentinel エラーと、`store` の型（`Record` / `Query` / `Watch` /
   `MinTrigramLen` / `ErrNotFound` / `ErrSchemaTooNew`）。
-  **`scrape` はもう直接使っていない**（以前は `DecodeKIF` などを使っていたが、
-  取得を `Fetcher` に寄せた）
+  **`scrape` は直接使っていない**（取得は `Fetcher` を通す）
 - ⚠️ **公開 API を変えるときは ikkyoku 側も直すこと**（`ikkyoku/app/kifuservice.go`
   が `_cmd/kicho/kifuservice.go` の移植）。**壊したことに気づくために
   `.\check-consumers.ps1` を置いてある**（後述）。`go build ./...` を

@@ -196,9 +196,9 @@ func hasClass(classAttr, want string) bool {
 // IsYomiuriURL は読売（yomiuri.co.jp）の URL かどうかを返す。
 //
 // **入力をどの取得元に回すかの判定に使う**（`IsShogiLiveURL` と対になるもの）。
-// ⚠️ **これが無いと「読売でも連盟でもない URL」を見分けられない。** 以前は
-// 連盟以外を全部読売として解決しようとしていたので、他サイトの .kif の URL が
-// 「読売の棋譜 ID」として扱われ、意味の分からないエラーになっていた。
+// ⚠️ **これが無いと「読売でも連盟でもない URL」を見分けられない。** 連盟以外を
+// 全部読売として解決すると、他サイトの .kif の URL が「読売の棋譜 ID」として
+// 扱われ、意味の分からないエラーになる。
 func IsYomiuriURL(raw string) bool {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {

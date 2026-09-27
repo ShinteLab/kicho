@@ -42,8 +42,8 @@ func TestSourceIDForURL(t *testing.T) {
 
 // 連盟でも読売でもない URL は「その中身を .kif として読む」へ回ること。
 //
-// ⚠️ **以前はここが読売の解決へ落ちていた**ので、他サイトの .kif の URL は
-// 「読売の棋譜 ID」扱いで意味の分からないエラーになっていた。**取得元の判別を
+// ⚠️ **ここが読売の解決へ落ちると**、他サイトの .kif の URL が
+// 「読売の棋譜 ID」扱いになり意味の分からないエラーで落ちる。**取得元の判別を
 // 呼び出し側に書かせないための入口**なので、この振り分けが命。
 func TestFetchReadsPlainKifURL(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -71,8 +71,7 @@ func TestFetchReadsPlainKifURL(t *testing.T) {
 
 // 同じ URL を取り込み直しても増えないこと（upsert に乗る）。
 //
-// ⚠️ **これが「URL から棋譜タブに登録できない」を直した本体。** 以前は
-// 登録のたびに UUID を振っていたので、同じ棋譜が何件も並んでいた。
+// ⚠️ 登録のたびに UUID を振ると、同じ棋譜が何件も並び「更新」でも追えなくなる。
 func TestImportURLIsIdempotent(t *testing.T) {
 	lib := newTestLibrary(t)
 	ctx := context.Background()

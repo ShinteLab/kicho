@@ -47,7 +47,7 @@ func TestWatchDerivesSourceURL(t *testing.T) {
 	}
 }
 
-// 追跡できないのは paste だけ（2026-09-12）。
+// 追跡できないのは paste だけ。
 //
 // 復元しても「更新」が必ず失敗するカードを作らないための蓋なので、
 // 判定は `Refresh` が受け付ける取得元と揃っていること。

@@ -165,8 +165,8 @@ type SearchQuery struct {
 
 // SearchResult は検索結果と件数。
 //
-// **件数を2つ返すのは UI が「N 件中 M 件」を出すため。** 以前は Search と
-// Count を別々に呼んでいたが、条件付きの該当件数が取れなかった。
+// **件数を2つ返すのは UI が「N 件中 M 件」を出すため。** Search と Count を
+// 別々に呼ぶのでは、条件付きの該当件数が取れない。
 type SearchResult struct {
 	Games []GameSummary `json:"games"`
 	// Matched は条件に合う件数(上限で切る前)。

@@ -14,13 +14,12 @@ import (
 
 // Fetcher は棋譜を取ってくる側だけを切り出したもの（**DB を持たない**）。
 //
-// ⚠️ **DB と切り離してあるのが要点**（2026-09-12）。取得は store を 1 度も
-// 触らないのに、以前は `Library` のメソッドだったので `kicho.Open`（＝DB を開く）
-// を通らないと呼べなかった。利用側（ikkyoku）は「棚が開けていなくても URL の
-// 棋譜は解析できる」という約束を持っているので、**DB が開けないことと
-// 取得できないことを繋げてはいけない。**
+// ⚠️ **DB と切り離してあるのが要点**。取得は store を 1 度も触らないので、
+// `Library` のメソッドにすると `kicho.Open`（＝DB を開く）を通らないと呼べなくなる。
+// 利用側（ikkyoku）は「棚が開けていなくても URL の棋譜は解析できる」という
+// 約束を持っているので、**DB が開けないことと取得できないことを繋げてはいけない。**
 //
-// `Library` はこれを埋め込んでいるので、`Library.Fetch` などは今までどおり使える。
+// `Library` はこれを埋め込んでいるので、`Library.Fetch` なども呼べる。
 type Fetcher struct {
 	yomiuri   *scrape.Yomiuri
 	shogilive *scrape.ShogiLive
@@ -47,10 +46,9 @@ func NewFetcher() *Fetcher {
 //   - それ以外の http(s) URL   → **その中身を .kif として読む**（HTML なら辿る）
 //   - URL でない文字列         → 読売の棋譜 ID
 //
-// ⚠️ **「それ以外の URL」を読売として解決しないこと**（2026-09-12 に直した）。
-// 以前は連盟以外を全部読売に回していたので、**他サイトの .kif の URL が
-// 「読売の棋譜 ID」扱いになり、意味の分からないエラーで落ちていた。**
-// 利用側はそのぶん「.kif は別の口」という 2 つ目の入力欄を持つことになっていた。
+// ⚠️ **「それ以外の URL」を読売として解決しないこと。** 読売に回すと
+// **他サイトの .kif の URL が「読売の棋譜 ID」扱いになり、意味の分からない
+// エラーで落ちる。** 利用側も「.kif は別の口」という 2 つ目の入力欄が要るようになる。
 //
 // 対局中の棋譜も取得できる（その場合 Finished は false）。
 // **手数 0（対局前）はエラーではない** —— 中継は対局開始前から棋譜を置いている。
@@ -97,7 +95,7 @@ func (f *Fetcher) Fetch(ctx context.Context, input string) (Fetched, error) {
 // **対局中に取ったものを後で保存するなら先にここを通す。**
 // そうしないと取得した時点の古い棋譜が入る。
 //
-// ⚠️ **url も取り直せる**（2026-09-12）。あちらの sourceID は**取得に使った
+// ⚠️ **url も取り直せる**。あちらの sourceID は**取得に使った
 // URL そのもの**（`sourceIDForURL`）なので、もう一度そこへ行けばよい。
 // **paste だけが取り直せない**（取得元が無い）。
 func (f *Fetcher) Refresh(ctx context.Context, source, sourceID string) (Fetched, error) {
@@ -131,20 +129,17 @@ func (f *Fetcher) PreviewKIF(text string) (Fetched, error) {
 
 // PreviewURL は URL から KIF を取得して解析する（**保存はしない**）。
 //
-// ⚠️ **中身は `fetchURL` と同じ**（2026-09-12 に寄せた）。別々に組み立てていた
-// ころは、こちらだけ `SourceID` が空で**そのまま保存できない Fetched** を
-// 返していた。
+// ⚠️ **中身は `fetchURL` と同じにしておくこと。** 別に組み立てると `SourceID` が
+// 抜けやすく、**そのまま保存できない Fetched** を返すことになる。
 func (f *Fetcher) PreviewURL(ctx context.Context, rawURL string) (Fetched, error) {
 	return f.fetchURL(ctx, rawURL)
 }
 
 // fetchURL は URL の中身を .kif として読む（保存はしない）。
 //
-// ⚠️ **`SourceID` に URL を入れるのが要点**（2026-09-12）。以前は url 由来の
-// 棋譜だけ `SourceID` が空で、保存のときに UUID を振っていた。その結果
-// **同じ URL を登録し直すたびに別の棋譜として増え、取り直しもできなかった**
-// （`(source, source_id)` が upsert の鍵なので、鍵が毎回変われば必ず増える）。
-// URL には URL 自体という自然な鍵があるので、それを使う。
+// ⚠️ **`SourceID` に URL を入れるのが要点。** `(source, source_id)` が upsert の
+// 鍵なので、保存のたびに UUID を振ると**同じ URL を登録し直すたびに別の棋譜として
+// 増え、取り直しもできない。** URL には URL 自体という自然な鍵があるので、それを使う。
 func (f *Fetcher) fetchURL(ctx context.Context, rawURL string) (Fetched, error) {
 	text, encoding, err := f.FetchKIFFromURL(ctx, rawURL)
 	if err != nil {
