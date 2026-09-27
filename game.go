@@ -16,10 +16,10 @@ import (
 // 取得元が違っても同じ形になる。読売は構造化データから組み立て、連盟は配信
 // されている .kif が原本、という違いは `Library.Fetch` の内側で吸収する。
 //
-// ⚠️ **これがフロントへ渡す DTO の原型。** 以前は kicho の Wails サービスと
-// ikkyoku の KifuService が同じ変換（取得元ごとの source_url の決め方、
-// 文字コードの既定、手数の数え方）をそれぞれ持っていて、片方だけ直せば
-// 黙って挙動が割れる状態だった。**取得元の知識は kicho に置く。**
+// ⚠️ **これがフロントへ渡す DTO の原型。** ここに寄せないと kicho の Wails
+// サービスと ikkyoku の KifuService が同じ変換（取得元ごとの source_url の決め方、
+// 文字コードの既定、手数の数え方）をそれぞれ持つことになり、片方だけ直せば
+// 黙って挙動が割れる。**取得元の知識は kicho に置く。**
 type Fetched struct {
 	// Source は取得元（store.Source*）。
 	Source string
@@ -83,12 +83,37 @@ func fromYomiuri(g *scrape.Game) Fetched {
 //
 // 本文は**サイトが配信している原本のまま**運ぶ（整形し直さない）。
 // 画面に出すメタデータだけ解析結果から取る。
-func (l *Library) fromShogiLive(g *scrape.LiveKifu) Fetched {
-	f := fromDocument(g.Doc, store.SourceShogiLive, "", g.KIF, g.Encoding)
-	f.SourceID = g.SourceID
+func (f *Fetcher) fromShogiLive(g *scrape.LiveKifu) Fetched {
+	got := fromDocument(g.Doc, store.SourceShogiLive, "", g.KIF, g.Encoding)
+	got.SourceID = g.SourceID
 	// 諸元: どこから取ったか。人が開いて確認するのは .kif ではなく中継ページ。
-	f.SourceURL = l.shogilive.ViewerURL(g.SourceID)
-	return f
+	got.SourceURL = f.shogilive.ViewerURL(g.SourceID)
+	return got
+}
+
+// fromShogiDB2 は将棋DB2 の棋譜を Fetched にする。
+//
+// 読売と同じく**構造化データから組み立てた KIF が原本**（サイトの KIF は
+// 消費時間を 0:00 で埋めた作り物なので使っていない）。メタデータもデータの値を使う。
+func (f *Fetcher) fromShogiDB2(g *scrape.ShogiDB2Game) Fetched {
+	return Fetched{
+		Source:   store.SourceShogiDB2,
+		SourceID: g.SourceID,
+		// 諸元: どこから取ったか。対局ページの URL。
+		SourceURL: f.shogidb2.GameURL(g.SourceID),
+		Event:     g.Event,
+		Handicap:  g.Handicap,
+		Place:     g.Place,
+		Black:     g.Black,
+		White:     g.White,
+		StartedAt: g.StartedAt,
+		EndMark:   g.EndMark,
+		Moves:     len(g.Moves),
+
+		KIF:      g.KIF(),
+		Format:   string(format.KIF),
+		Encoding: EncodingUTF8,
+	}
 }
 
 // fromDocument は解析結果を Fetched にする。
@@ -137,14 +162,24 @@ func countMoves(kifText string) int {
 // ⚠️ **この判断は kicho が持つ。呼び出し側に書かないこと。** 取り直せない URL を
 // 「再読み込み」の口として画面に出すと、押すと必ず失敗するボタンになる。
 //
-//	shogilive … 中継ページ(HTML)。**そこに置かれた .kif を辿れる**ので取り直せる
+//	shogilive … 中継ページ(HTML)。`Fetch` が棋譜 ID に解決して取り直せる
+//	yomiuri   … 棋譜ビューアの URL。`Fetch` が ID を取り出して取り直せる
+//	shogidb2  … 対局ページの URL。`Fetch` が ID を取り出して取り直せる
 //	url       … 指定された .kif そのもの。取り直せる
-//	yomiuri   … ⚠️ **取り直せない。** あちらは Nuxt のページで .kif を置いておらず、
-//	            KIF は構造化データ(_payload.js)から組み立てている。
-//	            取り直す口は Library.Refresh のほう
-//	paste     … 取得元が無い(空のまま)
+//	paste     … ⚠️ **取り直せない。** 取得元が無い(空のまま)
+//
+// ⚠️ **読売を「取り直せない」にしないこと。** 読売は .kif を置いていないが、
+// 判定は「その URL を .kif として読めるか」ではなく**「`Fetch` にその URL を
+// 渡せば同じ棋譜が取れるか」**。`Fetch` は yomiuri.co.jp の URL を
+// 棋譜 ID に解決してペイロードから組み立て直すので、**ビューアの URL を
+// 渡せば取り直せる。**
+//
+// これが効くのは**利用側の「再読み込み」**（ikkyoku の解析タブ）。あちらは
+// **食い違ったところから先だけを差し替えて検討の枝と評価値を残す**ので、
+// ここで空を返すと「中継を追いながら検討する」流れでは
+// **カードの更新 → 解析（根ごと入れ替え＝評価値が全部消える）しか手が無くなる。**
 func RefetchableURL(source, sourceURL string) string {
-	if source == store.SourceYomiuri {
+	if source == store.SourcePaste {
 		return ""
 	}
 	return sourceURL

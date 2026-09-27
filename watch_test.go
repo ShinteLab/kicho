@@ -47,19 +47,30 @@ func TestWatchDerivesSourceURL(t *testing.T) {
 	}
 }
 
-// 取り直せない取得元は追跡できないこと。
+// 追跡できないのは paste だけ。
 //
-// url / paste は sourceId が毎回新しい UUID なので、復元しても
-// 「更新」が必ず失敗するカードになる。
-func TestWatchRejectsImportSources(t *testing.T) {
+// 復元しても「更新」が必ず失敗するカードを作らないための蓋なので、
+// 判定は `Refresh` が受け付ける取得元と揃っていること。
+// ⚠️ **url を弾かないこと** —— sourceId が URL そのものになったので取り直せる。
+func TestWatchRejectsPasteOnly(t *testing.T) {
 	lib := newTestLibrary(t)
 	ctx := context.Background()
 
-	for _, source := range []string{store.SourceURL, store.SourcePaste} {
-		_, err := lib.Watch(ctx, Fetched{Source: source, SourceID: "some-uuid"})
-		if !errors.Is(err, ErrUnsupportedSource) {
-			t.Errorf("%s: err = %v, want ErrUnsupportedSource", source, err)
-		}
+	_, err := lib.Watch(ctx, Fetched{Source: store.SourcePaste, SourceID: "some-uuid"})
+	if !errors.Is(err, ErrUnsupportedSource) {
+		t.Errorf("paste: err = %v, want ErrUnsupportedSource", err)
+	}
+
+	// url は載る。諸元が空でも sourceId（＝URL）で補われること。
+	w, err := lib.Watch(ctx, Fetched{
+		Source:   store.SourceURL,
+		SourceID: "https://example.test/kifu/x.kif",
+	})
+	if err != nil {
+		t.Fatalf("url を追跡できない: %v", err)
+	}
+	if w.SourceURL != "https://example.test/kifu/x.kif" {
+		t.Errorf("SourceURL = %q", w.SourceURL)
 	}
 
 	if _, err := lib.Watch(ctx, Fetched{Source: store.SourceYomiuri}); !errors.Is(err, ErrNoInput) {

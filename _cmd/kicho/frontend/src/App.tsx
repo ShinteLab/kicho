@@ -40,6 +40,7 @@ type FetchCard = {
 const SOURCE_LABELS: Record<string, string> = {
   yomiuri: "読売（竜王戦）",
   shogilive: "将棋連盟 中継",
+  shogidb2: "将棋DB2",
 };
 
 /** カードの識別子。取得元ごとに棋譜 ID の形が違うので取得元も含める。 */
@@ -82,8 +83,9 @@ function isRestored(card: FetchCard): boolean {
 /**
  * ライブ取得できる取得元かどうか（＝「取得 URL」を出せるか）。
  *
- * URL 取り込み・貼り付けは取得元での一意な ID が無く sourceId が毎回新しい UUID
- * なので、そこへ取り直しに行くことはできない。
+ * kicho の HTTP サーバにライブ経路（`/ryuoh/kifu/…` など）があるのは中継サイトだけ。
+ * URL 取り込み（url）はカードの「更新」で取り直せるが、ライブ経路は無い。
+ * 貼り付け（paste）は取得元が無いので取り直せない。
  */
 function isLiveSource(source: string): boolean {
   return source in SOURCE_LABELS;
@@ -482,6 +484,9 @@ function FetchTab({
         <li>
           <strong>将棋連盟の中継</strong>: <code>live.shogi.or.jp</code> の中継ページ URL（
           <code>.html</code>）または <code>.kif</code> の URL
+        </li>
+        <li>
+          <strong>将棋DB2</strong>: <code>shogidb2.com/games/…</code> の対局ページ URL
         </li>
       </ul>
 

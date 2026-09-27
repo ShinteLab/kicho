@@ -193,6 +193,21 @@ func hasClass(classAttr, want string) bool {
 	return false
 }
 
+// IsYomiuriURL は読売（yomiuri.co.jp）の URL かどうかを返す。
+//
+// **入力をどの取得元に回すかの判定に使う**（`IsShogiLiveURL` と対になるもの）。
+// ⚠️ **これが無いと「読売でも連盟でもない URL」を見分けられない。** 連盟以外を
+// 全部読売として解決すると、他サイトの .kif の URL が「読売の棋譜 ID」として
+// 扱われ、意味の分からないエラーになる。
+func IsYomiuriURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "yomiuri.co.jp" || strings.HasSuffix(host, ".yomiuri.co.jp")
+}
+
 // KifuIDFromViewerURL は棋譜ビューア URL から ID 部分を取り出す。
 // 期待する形は `https://www.yomiuri.co.jp/kifu/s/{id}/`。
 func KifuIDFromViewerURL(raw string) (string, error) {

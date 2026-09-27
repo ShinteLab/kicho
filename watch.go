@@ -28,9 +28,12 @@ func (l *Library) Watches(ctx context.Context) ([]store.Watch, error) {
 
 // Watch は取得結果を追跡一覧に載せる（既にあれば内容を最新化する）。
 //
-// ⚠️ **ライブ中継（読売・連盟）だけを載せる。** url / paste は取得元での
-// 一意な ID を持たず sourceId が毎回新しい UUID になるため、そこへ取り直しに
-// 行けない —— 復元しても「更新」が必ず失敗するカードになる。
+// ⚠️ **載せられるのは取り直せるものだけ。** 復元しても「更新」が必ず失敗する
+// カードを作らないための蓋で、判定は `Refresh` が受け付ける取得元と揃えてある。
+// **paste だけが載らない**（取得元が無い）。
+//
+// ⚠️ **url も載る。** あちらの sourceId は URL そのものなので
+// （`sourceIDForURL`）、そこへ取り直しに行ける。
 //
 // 諸元(source_url)は Save と同じく取得元から決め直す（画面の値を信じない）。
 func (l *Library) Watch(ctx context.Context, f Fetched) (store.Watch, error) {
@@ -42,7 +45,7 @@ func (l *Library) Watch(ctx context.Context, f Fetched) (store.Watch, error) {
 	if err != nil {
 		return store.Watch{}, err
 	}
-	if source != store.SourceYomiuri && source != store.SourceShogiLive {
+	if source == store.SourcePaste {
 		return store.Watch{}, fmt.Errorf("%w: %s は取り直せないので追跡できません",
 			ErrUnsupportedSource, source)
 	}

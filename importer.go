@@ -43,12 +43,16 @@ func (l *Library) ImportKIF(ctx context.Context, text string) (store.Record, err
 // スクレイピングではなく、URL の中身をそのまま KIF として読む。
 // 他サイトの .kif ファイルや、別の kicho の /kifu/{id} を取り込める。
 // 棋譜中継ページ(HTML)の URL を渡した場合はそこから .kif を辿る。
+//
+// ⚠️ **同じ URL を取り込み直しても増えない。** 取得も ID の決め方も
+// `fetchURL` に寄せて `Save` を通すので、`(source, source_id)` の upsert に乗る
+// （`importDocument` を通すと登録のたびに UUID が振られて別の棋譜として増える）。
 func (l *Library) ImportURL(ctx context.Context, rawURL string) (store.Record, error) {
-	text, encoding, err := l.FetchKIFFromURL(ctx, rawURL)
+	got, err := l.fetchURL(ctx, rawURL)
 	if err != nil {
 		return store.Record{}, err
 	}
-	return l.importDocument(ctx, text, store.SourceURL, rawURL, encoding)
+	return l.Save(ctx, got)
 }
 
 // FetchKIFFromURL は URL から棋譜テキストを取得する（保存はしない）。
@@ -62,7 +66,7 @@ func (l *Library) ImportURL(ctx context.Context, rawURL string) (store.Record, e
 // なお、**日本将棋連盟の中継（live.shogi.or.jp）は取得タブで扱う。**
 // 対局中に随時更新されるため、カードとして積んで「更新」で取り直せる側に置いてある。
 // ここを通るのは終局後の .kif を単発で取り込む場合など。
-func (l *Library) FetchKIFFromURL(ctx context.Context, rawURL string) (text, encoding string, err error) {
+func (f *Fetcher) FetchKIFFromURL(ctx context.Context, rawURL string) (text, encoding string, err error) {
 	u, err := parseHTTPURL(rawURL)
 	if err != nil {
 		return "", "", err
@@ -122,6 +126,10 @@ func ParseKIF(text string) (kifu.Document, error) {
 
 // importDocument は棋譜テキストを解析してメタデータを取り出し、
 // **本文は原本のまま**保存する。
+//
+// ⚠️ **通るのは貼り付け（paste）だけ**。URL からの取り込みは
+// `fetchURL` + `Save` を通る（あちらは URL を鍵にできるので増えない）。
+// **ここへ url を戻さないこと。**
 //
 // 解析結果（棋戦名・対局者・日付・手数・終局）は一覧と検索のために使うだけで、
 // 本文は整形し直さない。整形すると変化・コメント・不成などの情報が落ちるため。
