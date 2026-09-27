@@ -1,7 +1,7 @@
-# CLAUDE.md
+# AGENTS.md
 
 kicho（棋帳）。棋譜を取得して保存し、外部ツールへ HTTP で配信する **Wails3 デスクトップアプリ**。
-リポジトリ全体の方針はルートの `CLAUDE.md` を参照。
+リポジトリ全体の方針はルートの `AGENTS.md` を参照。
 
 > 旧称は `kifu`、旧実装は Node.js + express。「棋譜 / kifu」は共有モジュール
 > `core/web/kifu.js`・KIF 形式・URL パスなど各所で使う語で紛らわしいため、
@@ -20,8 +20,12 @@ kicho（棋帳）。棋譜を取得して保存し、外部ツールへ HTTP で
 「ikkyoku 以外の将棋ソフトからの読み込み口」になる。**
 
 - ikkyoku が使うのは `kicho.Open(dbPath, logger)` と `Library` のメソッド、
-  それに `scrape` の部品（`DecodeKIF` / `ReadLimited` / `LooksLikeHTML` /
-  `KifURLFromHTML`）
+  **取得（`Fetch` / `Refresh`）は `kicho.NewFetcher()`**（DB を開かずに使うため。
+  `ikkyoku/app/kifufetch.go`）、それに `Fetched` / `RefetchableURL` /
+  `MaxSearchRows` / sentinel エラーと、`store` の型（`Record` / `Query` / `Watch` /
+  `MinTrigramLen` / `ErrNotFound` / `ErrSchemaTooNew`）。
+  **`scrape` はもう直接使っていない**（以前は `DecodeKIF` などを使っていたが、
+  取得を `Fetcher` に寄せた）
 - ⚠️ **公開 API を変えるときは ikkyoku 側も直すこと**（`ikkyoku/app/kifuservice.go`
   が `_cmd/kicho/kifuservice.go` の移植）。**壊したことに気づくために
   `.\check-consumers.ps1` を置いてある**（後述）。`go build ./...` を
@@ -80,7 +84,8 @@ kicho の Wails サービスも ikkyoku も蔵書操作をそこから直接呼�
 
 | 口 | 用途 |
 |---|---|
-| `Fetch(ctx, input)` | ライブ中継から取得。**取得元の判別もここ**（`live.shogi.or.jp` か否か） |
+| `NewFetcher()` | 取得だけの口（**DB 不要**）。`Library` はこれを埋め込んでいる（後述「取得は DB を要らない」） |
+| `Fetch(ctx, input)` | ライブ中継から取得。**取得元の判別もここ**（連盟・将棋DB2・読売・その他の URL・棋譜 ID。後述） |
 | `Refresh(ctx, source, sourceID)` | 取得済みを取り直す。取得元が分かっているので往復が無い |
 | `PreviewKIF(text)` / `PreviewURL(ctx, url)` | 取り込み前の確認（保存しない） |
 | `ImportKIF(ctx, text)` / `ImportURL(ctx, url)` | 取り込んで保存（毎回新規登録） |
@@ -322,7 +327,7 @@ FTS のクエリは `escapeFTS` でフレーズとしてくくる（`OR` や `NE
   どちらも無ければエラー
 - 相対パスは取得元 URL を基準に解決する
 
-登録タブ側（`Library.FetchKIFFromURL`）では、**HTML が返ってきたときだけ**この解決を挟む。
+URL の取得（`Fetcher.FetchKIFFromURL`）では、**HTML が返ってきたときだけ**この解決を挟む。
 判定は Content-Type ではなく中身で行う（KIF は `<` で始まらない → `scrape.LooksLikeHTML`）。
 `source_url` には貼られたページの URL をそのまま残す（`.kif` に書き換えない）。
 
@@ -396,7 +401,7 @@ UI は手数の横に「（対局前）」を出す。
 | **KIF → KI2** | **高** | **合法手生成が必要**。KI2 は移動元を書かず `右/左/上/引/寄/直` で区別するため、「その升に動ける同じ駒が他にあるか」を知る必要がある |
 | → USEN | 不明 | ShogiHome 独自形式。仕様確認から |
 
-合法手生成は `github.com/ShinteLab/engine` にある。ただし**ルート CLAUDE.md の依存規約は
+合法手生成は `github.com/ShinteLab/engine` にある。ただし**ルート AGENTS.md の依存規約は
 `engine → core` の一方向**なので、`core/kifu` から engine は参照できない。
 `kicho → engine` は循環しないため、engine が要る変換は `kicho/format` 側に置くこと
 （機械的な変換は `core/kifu` に置いてよい）。
@@ -432,7 +437,8 @@ BOM は `core/kifu` の Parse 側で落とす。
 **ライブ取得元は3つ**（読売＝スクレイピング、連盟＝`.kif` の直取得、
 将棋DB2＝LiveView から構造化データを取る）。
 取り方は違うが、カードに積む・更新する・保存する・ライブ URL を配る、の扱いは同じにしてある。
-`KifuService` が `store.Source*` で分岐し、UI 側は取得元を意識しない
+`store.Source*` での分岐は kicho 側（`Fetcher.Refresh` / `Library.resolveSource`）と
+`ServerService.SourceURLs` にあり、`KifuService` と UI 側は取得元を意識しない
 （カードに取得元のラベルを出すだけ）。
 
 そのため UI は **取得と保存を別操作**にしてある（「取得して保存」の一括操作は置かない）。
@@ -466,8 +472,9 @@ BOM は `core/kifu` の Parse 側で落とす。
 取り直して中身を差し替える。
 
 - 入力欄からの `Fetch(input)` と分けてあるのは、更新では**取得元がすでに分かっている**ため。
-  入力の判別（`scrape.IsShogiLiveURL`）も、URL から棋譜 ID を引き直す往復
-  （読売なら iframe の取得、連盟なら中継ページの取得）も挟まらない
+  入力の判別（`scrape.IsShogiLiveURL` など）も、URL から棋譜 ID を引き直す往復
+  （読売なら iframe の取得、連盟なら中継ページの取得）も挟まらない。
+  `url` は `source_id` が URL そのものなので、そこへもう一度取りに行く
 - 手数の変化を案内に出す（`refreshNotice`）。対局が進んだかどうかが知りたいため
 - **保存済みのカードで手数が変わったら「保存し直す」よう促す。** 更新しただけでは
   DB は古いままなので、ここを黙っていると更新＝保存だと誤解される
@@ -514,7 +521,7 @@ BOM は `core/kifu` の Parse 側で落とす。
 アンマウントされて入力した URL と取得したカードが消える。そのため取得タブの状態
 （入力・カードの配列）は `App` 側に持ち上げてある（`FetchState`）。
 
-**カードは DB（`watches`）に残る**（次節）。入力欄だけは永続化しない。
+**カードは DB（`watches`）に残る**（前節）。入力欄だけは永続化しない。
 保存後も入力とカードは残す
 （URL をコピーしたり、終局後に取り直して保存し直したりできるようにするため）。
 
@@ -522,12 +529,14 @@ BOM は `core/kifu` の Parse 側で落とす。
 手数の横に「（終局）」を出す。
 
 - 読売 … ペイロードの `end_mark`（終局していれば "投了" 等、対局中は空）
-- 連盟 … `.kif` の最終手が終局手かどうか（`kifu.Document.EndMark()`）
+- 連盟・URL … `.kif` の最終手が終局手かどうか（`kifu.Document.EndMark()`）
+- 将棋DB2 … `moves[].csa` の最後の終局コード（`%TORYO` 等。`kifu.DecodeCSA` が終局名を返す）
 
 UI ではこの2系統に対応する URL をそれぞれコピーできる。
 
 - **棋譜 URL**（`/kifu/{id}`）… 保存済み。サイトへは取りに行かない
-- **取得 URL**（`/ryuoh/kifu/{sourceId}` / `/shogilive/kifu/{sourceId}`）…
+- **取得 URL**（`/ryuoh/kifu/{sourceId}` / `/shogilive/kifu/{sourceId}` /
+  `/shogidb2/kifu/{sourceId}`）…
   開くたびにサイトから取り直す。対局中向け。取得元による出し分けは
   `ServerService.SourceURLs(source, sourceID)`
 
@@ -556,7 +565,7 @@ ShogiHome 等の外部ツールが「URL から棋譜を取得する」機能で
 ### URL の組み立ては Go 側に一本化する
 
 外部ツールへ貼る URL は UI の「URL コピー」で渡す。パスの組み立ては
-`httpapi.KifuPath` / `httpapi.RyuohKifuPath` にあり、**フロントにパスを直書きしない**。
+`httpapi.KifuPath` / `RyuohKifuPath` / `ShogiLiveKifuPath` / `ShogiDB2KifuPath` にあり、**フロントにパスを直書きしない**。
 ベース URL（ホスト・ポート・LAN アドレス）は `ServerService.KifuURLs` /
 `SourceURLs` が付けて返す。
 
@@ -606,7 +615,7 @@ ID からは `.kif` / `.html` の URL を組み立て直せる必要がある（
 
 連盟の `.kif` は `# --- Kifu for Windows ...` に始まり、指し手の間に `*` の
 観戦記コメントが大量に入る。**手数は行数ではなく `core/kifu.Parse` の結果で数える**
-（`KifuService.countMoves`）。行を数えるとコメントまで手数に入る。
+（`countMoves`。`game.go`。`Library.Save` が本文から数え直すのに使う）。行を数えるとコメントまで手数に入る。
 
 ### 動作確認に使える中継（第67期王位戦七番勝負）
 
