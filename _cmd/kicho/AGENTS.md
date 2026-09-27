@@ -21,7 +21,8 @@ go build -o bin/kicho.exe .            # または wails3 build / wails3 dev
 - **Go のサービスを変えたら必ず `wails3 generate bindings`** を実行する。
   忘れるとフロントが無言で古い型を使う
 - bindings はインターフェース生成（`-i`）。フロントは `import type` で受ける。
-  クラス生成に切り替えるなら Taskfile 側のフラグも合わせること（wails3 skill の落とし穴 12）
+  クラス生成に切り替えるなら Taskfile 側のフラグも合わせること
+  （揃っていないと、`wails3 dev` / `wails3 build` が手で作ったのと違う形の bindings を作る）
 - `frontend/dist` が無いと `//go:embed all:frontend/dist` が失敗して Go のビルドが通らない。
   先にフロントをビルドする
 
