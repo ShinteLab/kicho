@@ -2,7 +2,7 @@
 
 SQLite への永続化。全体像はルートの `AGENTS.md`。
 
-⚠️ **使う側はこのパッケージを直接呼ばない。** アプリも ikkyoku も `kicho.Library` を通す
+⚠️ **使う側はこのパッケージを直接呼ばない。** `kicho.Library` を通す
 （`Library.Store()` は公開していない）。ここに操作を足したら `Library` にも口を足す。
 
 ## ドライバ
@@ -19,7 +19,7 @@ PRAGMA は接続ごとの設定で、`database/sql` は接続が壊れれば黙�
 
 | PRAGMA | 理由 |
 |---|---|
-| `busy_timeout(5000)` | 既定 0 は待たずに `database is locked`。ikkyoku との共用があるので待たせる |
+| `busy_timeout(5000)` | 既定 0 は待たずに `database is locked`。同じ DB を複数のプロセスが開きうるので待たせる |
 | `journal_mode(WAL)` | 読みが書きをブロックしない。DB ファイルに永続する設定（`-wal` / `-shm` が並ぶ） |
 | `foreign_keys(1)` | `game_kifu` の `ON DELETE CASCADE`（既定は OFF） |
 
@@ -78,12 +78,12 @@ kicho 自前の `id` と `created_at` は維持されたまま内容だけ更新
   （`kif` 列の有無）で「新規」「旧スキーマ」を判定している
 - 移行は1トランザクション。失敗すれば元の `games` が残る
 - **自分より新しい版の DB は開かない**（`ErrSchemaTooNew`）。
-  kicho と ikkyoku は別バイナリなので、片方だけ更新した状態で同じ DB を
-  指すと版が食い違いうる。黙って開くと後段が `no such column` で落ちて
+  このライブラリを使うアプリは別々にビルドされるので、片方だけ更新した状態で
+  同じ DB を指すと版が食い違いうる。黙って開くと後段が `no such column` で落ちて
   原因が分からなくなるため、`Open` の時点で理由を返す。
   ⚠️ **`version >= schemaVersion` で早期 return する形にしないこと**
-- ⚠️ **版を上げると、DB を共用している場合に更新していない ikkyoku が開けなくなる**
-  （別々の DB が既定なので通常は影響しない）。両方をビルドし直せば解消する
+- ⚠️ **版を上げると、DB を共用している場合に更新していないアプリが開けなくなる**。
+  どちらもビルドし直せば解消する
 
 時刻の変換は SQLite の `strftime('%s', ...)` で行う。RFC3339 のオフセット付き
 文字列も正しく解釈され、Go の `time.Parse` と一致することを確認済み。

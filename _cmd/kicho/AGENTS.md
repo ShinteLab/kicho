@@ -5,9 +5,8 @@ Wails3 アプリ（独立したネストモジュール `kicho-app`）。全体�
 **Wails 依存はここだけ**（`main.go` / `kifuservice.go` / `serverservice.go`）。
 ロジックは親モジュール `github.com/ShinteLab/kicho` 側に置き、ここに書かない。
 
-⚠️ **ikkyoku が画面を持っていったので、この UI は将来「テスト用のモック」または
-「ikkyoku 以外の将棋ソフトからの読み込み口」になる。** 取得・保存の挙動を
-ここにだけ足すと ikkyoku と割れる。挙動は `kicho.Library` に足す。
+⚠️ **このアプリはライブラリを使う側の 1 つ。** 取得・保存の挙動をここにだけ足すと、
+同じライブラリを使う他のアプリと割れる。挙動は `kicho.Library` に足す。
 
 ## ビルド
 
@@ -40,7 +39,7 @@ go build -o bin/kicho.exe .            # または wails3 build / wails3 dev
 ## サービス
 
 - **`KifuService` は DTO の変換と入力チェックだけ。** 取得元ごとの `source_url` の
-  決め方・文字コードの既定・手数の数え方を書かないこと（ikkyoku 側にも同じ変換がある）
+  決め方・文字コードの既定・手数の数え方を書かないこと（`kicho.Library` / `kicho.Fetched` にある）
 - ⚠️ **`context.Background()` をそのまま DB へ渡さないこと。** store は接続を 1 本に
   絞っているので、止まらないクエリが1つあると以後の操作が全部待たされる
   （`dbContext` / `netContext`）
