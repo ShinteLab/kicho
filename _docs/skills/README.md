@@ -16,6 +16,4 @@
   New-Item -ItemType Junction -Path .claude\skills\kicho-add-source -Target (Resolve-Path _docs\skills\kicho-add-source)
   ```
 
-- worktree の `.claude/skills` にはフックでコピーが入るので、worktree 側で張る必要は無い
-- ⚠️ **編集するのはここ**（git で管理しているのはこちらだけ。worktree の `.claude/skills` は
-  コピーなので、そこを編集してもブランチに載らない）
+- ⚠️ **編集するのはここ**（git で管理しているのはこちらだけ）
