@@ -263,10 +263,13 @@ func (s *KifuService) Delete(id string) error {
 
 // Fetch はライブ中継から棋譜を取得する(保存はしない)。
 //
-// 取得元は入力から判別する(判別も取得も kicho 側)。
+// 取得元は入力から判別する(判別も取得も kicho 側。kicho.Fetcher.Fetch を参照)。
 //
-//   - live.shogi.or.jp の URL      → 日本将棋連盟の棋譜中継
-//   - それ以外(URL / 棋譜 ID)      → 読売(竜王戦)
+//   - live.shogi.or.jp の URL  → 日本将棋連盟の棋譜中継
+//   - shogidb2.com の URL      → 将棋DB2
+//   - yomiuri.co.jp の URL     → 読売(竜王戦)
+//   - それ以外の http(s) URL   → その中身を .kif として読む(HTML なら辿る)
+//   - URL でない文字列         → 読売の棋譜 ID
 //
 // 対局中の棋譜も取得できる(その場合 Finished は false)。
 func (s *KifuService) Fetch(input string) (GameDetail, error) {
@@ -418,8 +421,8 @@ func (s *KifuService) Watches() ([]WatchEntry, error) {
 // Watch は取得したカードを仮の一覧に載せる(既にあれば最新化する)。
 //
 // 2日制の対局で翌日また中継の URL を貼り直さずに済むようにするためのもの。
-// ライブ中継(読売・連盟)だけが対象で、登録タブの url / paste は
-// 取り直せないので kicho 側が弾く。
+// 取り直せるものだけが対象で、貼り付け(paste)は取得元が無いので kicho 側が弾く
+// (url は sourceId が URL そのものなので取り直せる)。
 func (s *KifuService) Watch(d GameDetail) (WatchEntry, error) {
 	ctx, cancel := dbContext()
 	defer cancel()

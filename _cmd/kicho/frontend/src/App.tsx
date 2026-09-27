@@ -83,8 +83,9 @@ function isRestored(card: FetchCard): boolean {
 /**
  * ライブ取得できる取得元かどうか（＝「取得 URL」を出せるか）。
  *
- * URL 取り込み・貼り付けは取得元での一意な ID が無く sourceId が毎回新しい UUID
- * なので、そこへ取り直しに行くことはできない。
+ * kicho の HTTP サーバにライブ経路（`/ryuoh/kifu/…` など）があるのは中継サイトだけ。
+ * URL 取り込み（url）はカードの「更新」で取り直せるが、ライブ経路は無い。
+ * 貼り付け（paste）は取得元が無いので取り直せない。
  */
 function isLiveSource(source: string): boolean {
   return source in SOURCE_LABELS;
