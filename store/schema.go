@@ -13,10 +13,13 @@ package store
 //	   変換は保存せず、要求時に行う（kicho/format）
 //	4: 追跡中の中継（watches）を追加。2日制の対局で翌日また URL を貼り直さずに
 //	   済むよう、「どのサイトのどの棋譜か」を再起動を跨いで持つ
-const schemaVersion = 4
+//	5: 人が書く欄を games に追加。直した対局名（event_edited）と備考（note）。
+//	   取得した値（event）は書き換えず別の列に持つ（Save の upsert が event を
+//	   上書きするため。詳しくは gamesSchemaSQL）。検索の索引にも含める
+const schemaVersion = 5
 
 // schemaSQL は最新スキーマ。マイグレーションでも同じものを使う。
-const schemaSQL = gamesSchemaSQL + watchesSchemaSQL
+const schemaSQL = gamesSchemaSQL + gamesFTSSchemaSQL + watchesSchemaSQL
 
 // gamesSchemaSQL は保存済みの棋譜（蔵書）。
 const gamesSchemaSQL = `
@@ -34,7 +37,13 @@ CREATE TABLE IF NOT EXISTS games (
     end_mark    TEXT NOT NULL DEFAULT '',
     moves       INTEGER NOT NULL DEFAULT 0,
     created_at  INTEGER NOT NULL DEFAULT 0,
-    updated_at  INTEGER NOT NULL DEFAULT 0
+    updated_at  INTEGER NOT NULL DEFAULT 0,
+    -- ここから下は人が書く欄。Save は触らない(upsert の SET にも INSERT の列にも入れない)。
+    -- event_edited は直した対局名(空 = 直していない)。event に直接書かないのは、
+    -- 取り直して保存した時点で upsert が event を上書きして編集が黙って消えるのと、
+    -- 「直してあること」が判らなくなるため。
+    event_edited TEXT NOT NULL DEFAULT '',
+    note         TEXT NOT NULL DEFAULT ''
 );
 
 -- 同じ棋譜を取り直しても重複させない。
@@ -57,30 +66,37 @@ CREATE TABLE IF NOT EXISTS game_kifu (
     encoding TEXT NOT NULL DEFAULT 'utf-8',
     body     TEXT NOT NULL
 );
+`
 
+// gamesFTSSchemaSQL は games の部分一致検索の索引と、同期トリガ 3 つ。
+//
+// v4 → v5 の移行で作り直すので gamesSchemaSQL から分けてある(rebuildGamesFTSSQL)。
+const gamesFTSSchemaSQL = `
 -- 部分一致検索。日本語では既定の unicode61 トークナイザが使いものにならない
 -- （CJK の連続を1トークンにするため前方一致しか効かない）ので trigram を使う。
 -- content= の外部コンテンツ方式にして本文を二重に持たない。
+-- 外部コンテンツ方式は列名で games を読むので、列名は games と一致させること。
+-- 対局名は取得した値(event)と直した値(event_edited)の両方を引く。
 CREATE VIRTUAL TABLE IF NOT EXISTS games_fts USING fts5(
-    event, black, white, place,
+    event, event_edited, black, white, place, note,
     content='games', content_rowid='rowid', tokenize='trigram'
 );
 
 CREATE TRIGGER IF NOT EXISTS games_fts_ai AFTER INSERT ON games BEGIN
-    INSERT INTO games_fts(rowid, event, black, white, place)
-    VALUES (new.rowid, new.event, new.black, new.white, new.place);
+    INSERT INTO games_fts(rowid, event, event_edited, black, white, place, note)
+    VALUES (new.rowid, new.event, new.event_edited, new.black, new.white, new.place, new.note);
 END;
 
 CREATE TRIGGER IF NOT EXISTS games_fts_ad AFTER DELETE ON games BEGIN
-    INSERT INTO games_fts(games_fts, rowid, event, black, white, place)
-    VALUES ('delete', old.rowid, old.event, old.black, old.white, old.place);
+    INSERT INTO games_fts(games_fts, rowid, event, event_edited, black, white, place, note)
+    VALUES ('delete', old.rowid, old.event, old.event_edited, old.black, old.white, old.place, old.note);
 END;
 
 CREATE TRIGGER IF NOT EXISTS games_fts_au AFTER UPDATE ON games BEGIN
-    INSERT INTO games_fts(games_fts, rowid, event, black, white, place)
-    VALUES ('delete', old.rowid, old.event, old.black, old.white, old.place);
-    INSERT INTO games_fts(rowid, event, black, white, place)
-    VALUES (new.rowid, new.event, new.black, new.white, new.place);
+    INSERT INTO games_fts(games_fts, rowid, event, event_edited, black, white, place, note)
+    VALUES ('delete', old.rowid, old.event, old.event_edited, old.black, old.white, old.place, old.note);
+    INSERT INTO games_fts(rowid, event, event_edited, black, white, place, note)
+    VALUES (new.rowid, new.event, new.event_edited, new.black, new.white, new.place, new.note);
 END;
 `
 
@@ -159,4 +175,27 @@ const migrateV2ToV3SQL = `
 ALTER TABLE game_kifu RENAME COLUMN kif TO body;
 ALTER TABLE game_kifu ADD COLUMN format TEXT NOT NULL DEFAULT 'kif';
 ALTER TABLE game_kifu ADD COLUMN encoding TEXT NOT NULL DEFAULT 'utf-8';
+`
+
+// v4 → v5: 人が書く欄（直した対局名・備考）を games に足し、検索の索引に含める。
+//
+// 列が無ければ足し(v5Columns)、FTS とトリガは捨てて作り直してから
+// 索引を games から組み直す。FTS5 は列を足せないので作り直すしかない。
+// 呼び出し側(migrateV4ToV5)が 1 トランザクションで流す。
+var v5Columns = []struct{ name, ddl string }{
+	{"event_edited", `ALTER TABLE games ADD COLUMN event_edited TEXT NOT NULL DEFAULT ''`},
+	{"note", `ALTER TABLE games ADD COLUMN note TEXT NOT NULL DEFAULT ''`},
+}
+
+// dropGamesFTSSQL は v4 までの FTS とトリガを捨てる(列が 4 つで、event_edited / note を持たない)。
+const dropGamesFTSSQL = `
+DROP TRIGGER IF EXISTS games_fts_ai;
+DROP TRIGGER IF EXISTS games_fts_ad;
+DROP TRIGGER IF EXISTS games_fts_au;
+DROP TABLE IF EXISTS games_fts;
+`
+
+// rebuildGamesFTSSQL は FTS を作り直し、既存の games から索引を組み直す。
+const rebuildGamesFTSSQL = gamesFTSSchemaSQL + `
+INSERT INTO games_fts(games_fts) VALUES('rebuild');
 `

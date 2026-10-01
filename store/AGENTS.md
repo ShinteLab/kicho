@@ -60,6 +60,18 @@ kicho 自前の `id` と `created_at` は維持されたまま内容だけ更新
 - **`moves` は列として持つ。** 一覧で本文を読まずに手数を出すため。
   KIF の書式を知っているのは呼び出し側なので `store` では数えず受け取る。
 
+### 人が書く欄（`event_edited` / `note`。v5）
+
+直した対局名と備考。書くのは `Annotate` だけ。
+
+- ⚠️ **`Save` はこの 2 列に触らない**（upsert の SET にも INSERT の列にも入れない）。
+  入れると取り直して保存した時点で人の編集が黙って消える
+  （`store_test.go` の `TestAnnotateSurvivesResave`）
+- ⚠️ **取得した値（`event`）を書き換えない。** 直した値は `event_edited` に置き、
+  表示だけが `Record.DisplayEvent` で差し替える。**`httpapi` は取得した値のまま配る**
+- 2 列とも `games_fts` に入れてある。⚠️ **FTS の列を変えたら `whereClause` の
+  LIKE 側も揃える**（語の長さで当たり外れが割れる）
+
 ### watches
 
 - 主キーは `(source, source_id)`。`games` の UNIQUE 索引ともフロントの `cardKey` とも
@@ -90,7 +102,7 @@ kicho 自前の `id` と `created_at` は維持されたまま内容だけ更新
 
 ## 検索
 
-`Search(ctx, Query)` — 棋戦名・対局者・場所の部分一致、開始日の範囲、
+`Search(ctx, Query)` — 棋戦名（取得した値と直した値）・対局者・場所・備考の部分一致、開始日の範囲、
 終局済みのみ、件数制限。KIF 本文は返さない。件数は `CountQuery(ctx, Query)`。
 
 **条件の組み立ては `whereClause` に 1 か所だけ置く。** `Search` と `CountQuery` が

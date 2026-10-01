@@ -295,6 +295,65 @@ func TestSearchReflectsUpdates(t *testing.T) {
 	}
 }
 
+// 直した対局名・備考で検索に当たること。元の（取得した）対局名でも当たり続けること。
+//
+// 3 文字以上（FTS）と 3 文字未満（LIKE）の両方を見る。**2 つの経路で引く列が
+// 揃っていないと、語の長さで当たったり当たらなかったりする。**
+func TestSearchFindsAnnotations(t *testing.T) {
+	s := newTestStore(t)
+	seedGames(t, s)
+	ctx := context.Background()
+
+	rec, err := s.FindBySource(ctx, SourceYomiuri, "g3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Annotate(ctx, rec.ID, "名人戦挑戦者決定戦", "千日手指し直し局"); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := map[string][]string{
+		"挑戦者決定": {"g3"}, // 直した対局名（FTS）
+		"指し直し":  {"g3"}, // 備考（FTS）
+		"ランキング": {"g3"}, // 取得した対局名（FTS）
+		"名人":    {"g3"}, // 直した対局名（LIKE）
+		"千日":    {"g3"}, // 備考（LIKE）
+	}
+	for text, want := range cases {
+		t.Run(text, func(t *testing.T) {
+			q := Query{Text: text}
+			got, err := s.Search(ctx, q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != len(want) || got[0].SourceID != want[0] {
+				t.Errorf("Search(%q) = %v, want %v", text, ids(got), want)
+			}
+			// 条件が Search と CountQuery で割れていないこと。
+			n, err := s.CountQuery(ctx, q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n != len(got) {
+				t.Errorf("CountQuery(%q) = %d, Search = %d 件", text, n, len(got))
+			}
+		})
+	}
+
+	// 直したのを取り消したら、直した値では当たらなくなること（トリガが古い値を消す）。
+	if err := s.Annotate(ctx, rec.ID, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"挑戦者決定", "指し直し", "名人", "千日"} {
+		if got, _ := s.Search(ctx, Query{Text: text}); len(got) != 0 {
+			t.Errorf("取り消したのに Search(%q) = %v", text, ids(got))
+		}
+	}
+	if got, _ := s.Search(ctx, Query{Text: "ランキング"}); len(got) != 1 {
+		t.Errorf("取得した対局名で当たらない: %v", ids(got))
+	}
+}
+
 // 削除したら FTS からも消えること。
 func TestSearchReflectsDeletes(t *testing.T) {
 	s := newTestStore(t)

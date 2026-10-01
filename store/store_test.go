@@ -635,3 +635,245 @@ func TestReopenPersists(t *testing.T) {
 		t.Errorf("Event = %q", got.Event)
 	}
 }
+
+// 人が書いた欄（直した対局名・備考）は、同じ棋譜を取り直して保存しても残ること。
+//
+// **これが event_edited を event と別の列にした理由そのもの。** Save の upsert は
+// `event = excluded.event` で上書きするので、event に直接書いていたら取り直して
+// 保存した時点で編集が黙って消える。Save が event_edited / note に触り始めたら
+// ここで落ちる。取得した値（event）のほうは取り直した値で更新されること。
+func TestAnnotateSurvivesResave(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	rec, err := s.Save(ctx, sampleGame())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Annotate(ctx, rec.ID, "直した棋戦名", "封じ手は２五歩"); err != nil {
+		t.Fatalf("Annotate: %v", err)
+	}
+
+	// 中継側で対局名が変わった（埋まった）ものとして取り直して保存する。
+	g := sampleGame()
+	g.Event = "取り直した棋戦名"
+	g.Moves = 2
+	saved, err := s.Save(ctx, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.ID != rec.ID {
+		t.Fatalf("ID changed: %q -> %q", rec.ID, saved.ID)
+	}
+	// Save が返す Record にも人が書いた欄が載っていること（画面がそのまま使うため）。
+	if saved.EventEdited != "直した棋戦名" || saved.Note != "封じ手は２五歩" {
+		t.Errorf("Save の戻り値: EventEdited=%q Note=%q", saved.EventEdited, saved.Note)
+	}
+
+	got, err := s.Get(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EventEdited != "直した棋戦名" || got.Note != "封じ手は２五歩" {
+		t.Errorf("取り直して保存したら編集が消えた: EventEdited=%q Note=%q", got.EventEdited, got.Note)
+	}
+	if got.Event != "取り直した棋戦名" || got.Moves != 2 {
+		t.Errorf("取得した値が更新されていない: Event=%q Moves=%d", got.Event, got.Moves)
+	}
+	if got.DisplayEvent() != "直した棋戦名" || !got.EventIsEdited() {
+		t.Errorf("DisplayEvent=%q EventIsEdited=%v", got.DisplayEvent(), got.EventIsEdited())
+	}
+
+	// 一覧（本文なし）にも載ること。
+	list, err := s.ListSummary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].EventEdited != "直した棋戦名" || list[0].Note != "封じ手は２五歩" {
+		t.Errorf("ListSummary = %+v", list)
+	}
+}
+
+// 空を書けば「直していない」に戻り、表示は取得した値になること。
+// 取得した値（event）も updated_at（取得・保存の時刻）も変えないこと。
+func TestAnnotateClearsAndKeepsFetchedValues(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	rec, err := s.Save(ctx, sampleGame())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 同じ秒のうちに書くと updated_at の比較が意味を持たないので、古い時刻にしておく。
+	if _, err := s.db.ExecContext(ctx, `UPDATE games SET updated_at = 1 WHERE id = ?`, rec.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Annotate(ctx, rec.ID, "直した棋戦名", "備考"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Annotate(ctx, rec.ID, "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Get(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EventEdited != "" || got.Note != "" || got.EventIsEdited() {
+		t.Errorf("取り消せていない: EventEdited=%q Note=%q", got.EventEdited, got.Note)
+	}
+	if got.DisplayEvent() != sampleGame().Event || got.Event != sampleGame().Event {
+		t.Errorf("DisplayEvent=%q Event=%q", got.DisplayEvent(), got.Event)
+	}
+	if got.UpdatedAt.Unix() != 1 {
+		t.Errorf("UpdatedAt = %v（Annotate が取得・保存の時刻を変えた）", got.UpdatedAt)
+	}
+	// 棋譜本文には触らない（原本を保持する）。
+	if got.Body != sampleGame().Body {
+		t.Errorf("Body が変わった: %q", got.Body)
+	}
+}
+
+func TestAnnotateMissing(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Annotate(context.Background(), "no-such-id", "x", ""); !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// v4（人が書く欄が無く、FTS が 4 列）の DB を v5 へ移行できること。
+// 既存の行が検索でき、移行後は直した対局名・備考でも引けること。
+func TestMigrateV4ToV5(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v4.db")
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// v4 のスキーマ（schema.go の v4 当時の gamesSchemaSQL + watchesSchemaSQL）。
+	_, err = db.Exec(`
+        CREATE TABLE games (
+            id TEXT PRIMARY KEY, source TEXT NOT NULL, source_id TEXT NOT NULL,
+            source_url TEXT NOT NULL DEFAULT '', event TEXT NOT NULL DEFAULT '',
+            handicap TEXT NOT NULL DEFAULT '', place TEXT NOT NULL DEFAULT '',
+            black TEXT NOT NULL DEFAULT '', white TEXT NOT NULL DEFAULT '',
+            started_at INTEGER NOT NULL DEFAULT 0, end_mark TEXT NOT NULL DEFAULT '',
+            moves INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);
+        CREATE UNIQUE INDEX idx_games_source ON games(source, source_id);
+        CREATE INDEX idx_games_started_at ON games(started_at DESC);
+        CREATE INDEX idx_games_black ON games(black);
+        CREATE INDEX idx_games_white ON games(white);
+        CREATE TABLE game_kifu (
+            game_id TEXT PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
+            format TEXT NOT NULL DEFAULT 'kif', encoding TEXT NOT NULL DEFAULT 'utf-8',
+            body TEXT NOT NULL);
+        CREATE VIRTUAL TABLE games_fts USING fts5(
+            event, black, white, place,
+            content='games', content_rowid='rowid', tokenize='trigram');
+        CREATE TRIGGER games_fts_ai AFTER INSERT ON games BEGIN
+            INSERT INTO games_fts(rowid, event, black, white, place)
+            VALUES (new.rowid, new.event, new.black, new.white, new.place);
+        END;
+        CREATE TRIGGER games_fts_ad AFTER DELETE ON games BEGIN
+            INSERT INTO games_fts(games_fts, rowid, event, black, white, place)
+            VALUES ('delete', old.rowid, old.event, old.black, old.white, old.place);
+        END;
+        CREATE TRIGGER games_fts_au AFTER UPDATE ON games BEGIN
+            INSERT INTO games_fts(games_fts, rowid, event, black, white, place)
+            VALUES ('delete', old.rowid, old.event, old.black, old.white, old.place);
+            INSERT INTO games_fts(rowid, event, black, white, place)
+            VALUES (new.rowid, new.event, new.black, new.white, new.place);
+        END;
+        CREATE TABLE watches (
+            source TEXT NOT NULL, source_id TEXT NOT NULL,
+            source_url TEXT NOT NULL DEFAULT '', event TEXT NOT NULL DEFAULT '',
+            black TEXT NOT NULL DEFAULT '', white TEXT NOT NULL DEFAULT '',
+            started_at INTEGER NOT NULL DEFAULT 0, end_mark TEXT NOT NULL DEFAULT '',
+            moves INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (source, source_id));
+
+        INSERT INTO games (id, source, source_id, event, black, white, place, moves,
+                           created_at, updated_at)
+        VALUES ('v4-id', 'yomiuri', 'abc', '第39期竜王戦決勝トーナメント',
+                '柵木幹太五段', '斎藤慎太郎八段', '東京都', 140, 1, 1);
+        INSERT INTO game_kifu (game_id, body) VALUES ('v4-id', '手合割：平手' || char(10));
+        INSERT INTO watches (source, source_id, event) VALUES ('yomiuri', 'w1', '追跡中');
+        PRAGMA user_version = 4;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open on v4 schema: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	var version int
+	s.db.QueryRow(`PRAGMA user_version`).Scan(&version)
+	if version != schemaVersion {
+		t.Errorf("user_version = %d, want %d", version, schemaVersion)
+	}
+
+	got, err := s.Get(ctx, "v4-id")
+	if err != nil {
+		t.Fatalf("Get after migration: %v", err)
+	}
+	if got.Event != "第39期竜王戦決勝トーナメント" || got.EventEdited != "" || got.Note != "" {
+		t.Errorf("既存行: Event=%q EventEdited=%q Note=%q", got.Event, got.EventEdited, got.Note)
+	}
+
+	// 既存行が索引から引けること（FTS を作り直して rebuild している）。
+	for _, text := range []string{"決勝トーナメント", "斎藤慎太郎", "柵木"} {
+		found, err := s.Search(ctx, Query{Text: text})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(found) != 1 || found[0].ID != "v4-id" {
+			t.Errorf("Search(%q) after migration = %v", text, ids(found))
+		}
+	}
+
+	// 移行後は直した対局名・備考でも引け、トリガが 6 列で効いていること。
+	if err := s.Annotate(ctx, "v4-id", "名人戦挑戦者決定戦", "千日手指し直し局"); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"挑戦者決定", "指し直し", "決勝トーナメント"} {
+		found, err := s.Search(ctx, Query{Text: text})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(found) != 1 {
+			t.Errorf("Search(%q) after annotate = %v", text, ids(found))
+		}
+	}
+
+	// 追跡中の中継（watches）には触らないこと。
+	ws, err := s.Watches(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ws) != 1 || ws[0].Event != "追跡中" {
+		t.Errorf("watches = %+v", ws)
+	}
+
+	// 開き直しても再移行しないこと（索引が二重にならない）。
+	s.Close()
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s2.Close()
+	found, err := s2.Search(ctx, Query{Text: "決勝トーナメント"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 {
+		t.Errorf("Search after reopen = %v", ids(found))
+	}
+}
