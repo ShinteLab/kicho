@@ -85,7 +85,51 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// v4 → v5: 人が書く欄（直した対局名・備考）を足し、検索の索引に含める。
+	// 列が揃っていても FTS が古い（4 列の）ままなら作り直す。
+	ftsCols, err := columnSet(db, "games_fts")
+	if err != nil {
+		return err
+	}
+	if !cols["event_edited"] || !cols["note"] || !ftsCols["event_edited"] || !ftsCols["note"] {
+		if err := migrateV4ToV5(db, cols); err != nil {
+			return err
+		}
+	}
+
 	return setVersion(db, schemaVersion)
+}
+
+// migrateV4ToV5 は games に人が書く欄を足し、FTS を作り直す。
+//
+// 途中で失敗しても v4 の形が残るよう、1 トランザクションで行う
+// (FTS を捨てたまま列だけ足された DB にしない)。
+func migrateV4ToV5(db *sql.DB, cols map[string]bool) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 先に FTS とトリガを捨てる(古いトリガが残ったまま列を足さないため)。
+	if _, err := tx.Exec(dropGamesFTSSQL); err != nil {
+		return fmt.Errorf("migrate to v5: drop fts: %w", err)
+	}
+	for _, c := range v5Columns {
+		if cols[c.name] {
+			continue
+		}
+		if _, err := tx.Exec(c.ddl); err != nil {
+			return fmt.Errorf("migrate to v5: add column %s: %w", c.name, err)
+		}
+	}
+	if _, err := tx.Exec(rebuildGamesFTSSQL); err != nil {
+		return fmt.Errorf("migrate to v5: rebuild fts: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration: %w", err)
+	}
+	return nil
 }
 
 // migrateV0ToV1 は「KIF 同居・時刻 TEXT」の旧スキーマを v1 へ移す。

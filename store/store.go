@@ -82,7 +82,29 @@ type Record struct {
 	ID        string // kicho 自前の ID。HTTP の /kifu/:id で使う
 	CreatedAt time.Time
 	UpdatedAt time.Time
+
+	// ここから下は**人が書く欄**(Annotate で書く)。Game に置かないのは、
+	// Game は Save が書くもので、Save はこの欄に触らないため
+	// (取り直して保存しても消えない)。
+
+	// EventEdited は人が直した対局名。空なら直していない。
+	// ⚠️ **取得した値(Event)は書き換えない。** 表示には DisplayEvent を使う。
+	// httpapi(外部ツールへの配信)は取得した値のまま配る。
+	EventEdited string
+	// Note は備考。
+	Note string
 }
+
+// DisplayEvent は画面に出す対局名を返す(直した値があればそれ、無ければ取得した値)。
+func (r Record) DisplayEvent() string {
+	if r.EventEdited != "" {
+		return r.EventEdited
+	}
+	return r.Event
+}
+
+// EventIsEdited は対局名を人が直してあるかどうかを返す。
+func (r Record) EventIsEdited() bool { return r.EventEdited != "" }
 
 // Store は棋譜データベース。
 type Store struct {
@@ -176,11 +198,13 @@ func (s *Store) Save(ctx context.Context, g Game) (Record, error) {
 	defer tx.Rollback()
 
 	// 既存を探す(あれば ID と CreatedAt を引き継ぐ)。
-	var id string
+	// 人が書く欄(event_edited / note)は読むだけ。返す Record に載せるためで、
+	// ⚠️ **下の upsert には入れない**(取り直して保存しても編集が消えないように)。
+	var id, eventEdited, note string
 	var createdAt int64
 	err = tx.QueryRowContext(ctx,
-		`SELECT id, created_at FROM games WHERE source = ? AND source_id = ?`,
-		g.Source, g.SourceID).Scan(&id, &createdAt)
+		`SELECT id, created_at, event_edited, note FROM games WHERE source = ? AND source_id = ?`,
+		g.Source, g.SourceID).Scan(&id, &createdAt, &eventEdited, &note)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		id = uuid.NewString()
@@ -227,17 +251,19 @@ func (s *Store) Save(ctx context.Context, g Game) (Record, error) {
 	}
 
 	return Record{
-		Game:      g,
-		ID:        id,
-		CreatedAt: fromEpoch(createdAt),
-		UpdatedAt: now,
+		Game:        g,
+		ID:          id,
+		CreatedAt:   fromEpoch(createdAt),
+		UpdatedAt:   now,
+		EventEdited: eventEdited,
+		Note:        note,
 	}, nil
 }
 
 // metaColumns は KIF 本文を含まないメタデータの列。
 const metaColumns = `g.id, g.source, g.source_id, g.source_url, g.event, g.handicap, g.place,
                      g.black, g.white, g.started_at, g.end_mark, g.moves,
-                     g.created_at, g.updated_at`
+                     g.created_at, g.updated_at, g.event_edited, g.note`
 
 // withKifu はメタデータに棋譜本文(と形式・文字コード)を足した SELECT 句。
 const withKifu = metaColumns + `, COALESCE(k.body, ''),
@@ -259,7 +285,7 @@ func scanMeta(sc scanner) (Record, error) {
 	var startedAt, createdAt, updatedAt int64
 	err := sc.Scan(&r.ID, &r.Source, &r.SourceID, &r.SourceURL, &r.Event, &r.Handicap, &r.Place,
 		&r.Black, &r.White, &startedAt, &r.EndMark, &r.Moves,
-		&createdAt, &updatedAt)
+		&createdAt, &updatedAt, &r.EventEdited, &r.Note)
 	if err != nil {
 		return Record{}, err
 	}
@@ -274,7 +300,7 @@ func scanFull(sc scanner) (Record, error) {
 	var startedAt, createdAt, updatedAt int64
 	err := sc.Scan(&r.ID, &r.Source, &r.SourceID, &r.SourceURL, &r.Event, &r.Handicap, &r.Place,
 		&r.Black, &r.White, &startedAt, &r.EndMark, &r.Moves,
-		&createdAt, &updatedAt, &r.Body, &r.Format, &r.Encoding)
+		&createdAt, &updatedAt, &r.EventEdited, &r.Note, &r.Body, &r.Format, &r.Encoding)
 	if err != nil {
 		return Record{}, err
 	}
@@ -358,6 +384,30 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// Annotate は人が書く欄(直した対局名と備考)を書き換える。無ければ ErrNotFound。
+//
+// eventEdited を空にすると「直していない」に戻る。前後の空白を落とす・
+// 取得した値と同じなら空にする、といった整えは呼び出し側(kicho.Library.Annotate)の役目。
+//
+// ⚠️ **event(取得した値)と updated_at は変えない。** updated_at は取得・保存の
+// 時刻であって、人が書いた時刻ではない。
+func (s *Store) Annotate(ctx context.Context, id, eventEdited, note string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE games SET event_edited = ?, note = ? WHERE id = ?`, eventEdited, note, id)
+	if err != nil {
+		return fmt.Errorf("annotate game: %w", err)
+	}
+	// 値が同じでも一致した行は数えられるので、0 なら該当なし。
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("annotate game: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // Count は保存件数を返す。
 func (s *Store) Count(ctx context.Context) (int, error) {
 	var n int
@@ -373,7 +423,7 @@ const MinTrigramLen = 3
 
 // Query は検索条件。ゼロ値は「条件なし」を意味する。
 type Query struct {
-	// Text は棋戦名・対局者・場所への部分一致。
+	// Text は棋戦名(取得した値と直した値の両方)・対局者・場所・備考への部分一致。
 	// 3文字以上なら FTS5(trigram)、それ未満は LIKE で走査する。
 	Text string
 	// From / To は開始日時の範囲(ゼロ値は無制限)。To はその時刻を含む。
@@ -419,10 +469,12 @@ func whereClause(q Query) (sql string, args []any) {
 		} else {
 			// trigram は3文字未満を索引化できないため走査するしかない。
 			like := "%" + escapeLike(text) + "%"
+			// 列は games_fts と揃える(どちらの経路でも同じ列を引くように)。
 			where = append(where,
-				`(g.event LIKE ? ESCAPE '\' OR g.black LIKE ? ESCAPE '\'
-				  OR g.white LIKE ? ESCAPE '\' OR g.place LIKE ? ESCAPE '\')`)
-			args = append(args, like, like, like, like)
+				`(g.event LIKE ? ESCAPE '\' OR g.event_edited LIKE ? ESCAPE '\'
+				  OR g.black LIKE ? ESCAPE '\' OR g.white LIKE ? ESCAPE '\'
+				  OR g.place LIKE ? ESCAPE '\' OR g.note LIKE ? ESCAPE '\')`)
+			args = append(args, like, like, like, like, like, like)
 		}
 	}
 

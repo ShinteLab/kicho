@@ -89,6 +89,40 @@ func (l *Library) Delete(ctx context.Context, id string) error {
 	return l.store.Delete(ctx, id)
 }
 
+// Annotation は保存済みの棋譜に人が書く欄。
+//
+// 中継などの外部サービス由来の棋譜は対局名が欠けていることがあり、それを人が埋める。
+// ⚠️ **取得した値（Record.Event）は書き換えない。** 直した値は別の列に持つ
+// （`store.Record.EventEdited`）。取り直して保存しても消えず、httpapi は取得した値のまま配る。
+type Annotation struct {
+	// EventEdited は直した対局名。空なら「直していない」（取得した値を使う）。
+	EventEdited string
+	// Note は備考。
+	Note string
+}
+
+// Annotate は保存済みの棋譜に、直した対局名と備考を書く。無ければ store.ErrNotFound。
+//
+// どちらも前後の空白を落とす。**直した対局名が取得した値と同じなら空（直していない）
+// として保存する** —— 同じ値を「直した」扱いで持つと、あとで取り直して対局名が
+// 変わったときに古い値で隠してしまう。空を渡せば直したのを取り消せる。
+//
+// 返すのは書いたあとの棋譜（KIF 本文つき）。棋譜本文には触らない（原本を保持する）。
+func (l *Library) Annotate(ctx context.Context, id string, a Annotation) (store.Record, error) {
+	cur, err := l.store.Get(ctx, id)
+	if err != nil {
+		return store.Record{}, err
+	}
+	event := strings.TrimSpace(a.EventEdited)
+	if event == strings.TrimSpace(cur.Event) {
+		event = ""
+	}
+	if err := l.store.Annotate(ctx, id, event, strings.TrimSpace(a.Note)); err != nil {
+		return store.Record{}, err
+	}
+	return l.store.Get(ctx, id)
+}
+
 // MaxSearchRows は Search が1回に返す上限。
 //
 // **棋譜を溜め込んでいく前提**なので、UI の一覧が件数無制限だと蔵書が増えた

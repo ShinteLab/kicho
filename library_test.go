@@ -84,6 +84,49 @@ func TestSaveRecountsMoves(t *testing.T) {
 	}
 }
 
+// 直した対局名が取得した値と同じなら「直していない」として持つこと。
+//
+// 同じ値を「直した」扱いで持つと、あとで取り直して対局名が変わったときに
+// 古い値で隠してしまう。前後の空白は落とす。取得した値（Event）は書き換えない。
+func TestAnnotateDropsEditEqualToFetched(t *testing.T) {
+	lib := newTestLibrary(t)
+	ctx := context.Background()
+
+	rec, err := lib.Save(ctx, Fetched{
+		Source: store.SourceURL, SourceID: "a", Event: "テスト棋戦", KIF: importSample,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := lib.Annotate(ctx, rec.ID, Annotation{EventEdited: "  テスト棋戦 ", Note: "  メモ\n二行目  "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EventEdited != "" || got.EventIsEdited() {
+		t.Errorf("取得した値と同じなのに直した扱い: EventEdited=%q", got.EventEdited)
+	}
+	if got.Note != "メモ\n二行目" {
+		t.Errorf("Note = %q", got.Note)
+	}
+
+	got, err = lib.Annotate(ctx, rec.ID, Annotation{EventEdited: " 別の棋戦 ", Note: got.Note})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EventEdited != "別の棋戦" || got.Event != "テスト棋戦" || got.DisplayEvent() != "別の棋戦" {
+		t.Errorf("EventEdited=%q Event=%q DisplayEvent=%q", got.EventEdited, got.Event, got.DisplayEvent())
+	}
+	// 戻り値は書いたあとの棋譜（本文つき）。本文は原本のまま。
+	if got.Body != importSample {
+		t.Error("Body が原本と違う")
+	}
+
+	if _, err := lib.Annotate(ctx, "no-such-id", Annotation{EventEdited: "x"}); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("err = %v, want store.ErrNotFound", err)
+	}
+}
+
 // 保存できない取得元は sentinel で返すこと（文言比較で分岐させないため）。
 func TestSaveRejectsUnknownSource(t *testing.T) {
 	lib := newTestLibrary(t)

@@ -16,7 +16,4 @@
   New-Item -ItemType Junction -Path .claude\skills\kicho-add-source -Target (Resolve-Path _docs\skills\kicho-add-source)
   ```
 
-- ⚠️ **worktree（`.claude/worktrees/<名前>/`）の `.claude/skills` にはジャンクションを張らない。**
-  Claude Desktop はセッション削除のとき worktree の `.claude` を片付けるので、
-  そこがジャンクションだと**先の実体が消える**（ikkyoku で実際に起きた。`ikkyoku/_docs/skills/README.md`）
 - ⚠️ **編集するのはここ**（git で管理しているのはこちらだけ）
