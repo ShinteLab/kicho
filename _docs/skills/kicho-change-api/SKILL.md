@@ -48,7 +48,7 @@ rg -n "kicho\.|store\." ..\ikkyoku --glob "*.go"
 ## `check-consumers.ps1` が見ていること
 
 1. **replace の取りこぼし** —— Go は**メインモジュール以外の replace を読まない**。
-   kicho が相対 replace で引く依存（今は `core`）は、ikkyoku 側の
+   kicho が相対 replace で引く依存は、ikkyoku 側の
    **2 つの go.mod（ルートと `_cmd/ikkyoku`）両方**に同じ replace が要る。
    **kicho に依存を足すたびに発生する**
 2. **使う側のビルド** —— 一時的な `go.work` を作り、**この作業ツリーの kicho** を

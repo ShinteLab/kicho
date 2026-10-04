@@ -111,7 +111,7 @@ $goWork = Join-Path $work "go.work"
 try {
     # ワークスペースに並べるのは**使う側のモジュールだけ**。
     # kicho は use ではなく replace で差し替える —— use に入れると kicho 自身の
-    # `replace ../core` が worktree 基準で解決されて、使う側の core と
+    # 相対 replace が worktree 基準で解決されて、使う側の同じ依存と
     # 「同じモジュールが2回出てくる」衝突になるため。
     #
     # `_cmd/kicho`（kicho-app）も入れない。Wails のバージョンが ikkyoku 側と

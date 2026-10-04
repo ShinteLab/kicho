@@ -2,10 +2,8 @@ module github.com/ShinteLab/kicho
 
 go 1.26.1
 
-replace github.com/ShinteLab/core => ../core
-
 require (
-	github.com/ShinteLab/core v0.0.0-00010101000000-000000000000
+	github.com/ShinteLab/core v0.2.0
 	github.com/dop251/goja v0.0.0-20260723142020-b4aef50fa347
 	github.com/google/uuid v1.6.0
 	golang.org/x/net v0.57.0

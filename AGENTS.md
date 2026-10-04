@@ -42,8 +42,9 @@ Wails 依存を `_cmd/kicho/`（ネストモジュール `kicho-app`）に閉じ
 ロジックは親モジュール `github.com/ShinteLab/kicho` の通常パッケージに置く。
 ロジック側に `github.com/wailsapp/wails/v3` を import しないこと。
 
-`core` はタグ未発行のため `replace github.com/ShinteLab/core => ../core` で引いている。
-`_cmd/kicho` は `core` と `kicho` の両方を replace で参照する。
+`core` はタグ（`v0.2.0`〜）で引いている。⚠️ **手元の `core` を直しても、タグを打って
+`go get github.com/ShinteLab/core@<タグ>` で上げるまで kicho には入らない。**
+`_cmd/kicho` は `kicho` だけを replace で参照する。
 
 | パッケージ | 役割 |
 |---|---|
