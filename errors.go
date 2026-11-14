@@ -15,11 +15,11 @@ var (
 	ErrNoInput = errors.New("URL または棋譜 ID を入力してください")
 	// ErrEmptyKifu は本文が空（取得も貼り付けも中身が無い）。
 	ErrEmptyKifu = errors.New("棋譜が空です")
-	// ErrNotKifu は KIF として読み取れなかった（HTML やただの文章）。
+	// ErrNotKifu は棋譜（KIF / CSA）として読み取れなかった（HTML やただの文章）。
 	//
 	// **手数 0 はこれに当たらない。** 中継は対局開始前からヘッダだけの .kif を
 	// 置いており、1 手も無いのは正当な状態（`kifu.Document.Empty()` で判定する）。
-	ErrNotKifu = errors.New("KIF として読み取れませんでした")
+	ErrNotKifu = errors.New("棋譜（KIF / CSA）として読み取れませんでした")
 	// ErrUnsupportedSource は取得元が store.Source* のどれでもない。
 	ErrUnsupportedSource = errors.New("扱えない取得元です")
 )

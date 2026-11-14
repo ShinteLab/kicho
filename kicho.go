@@ -216,7 +216,7 @@ func (l *Library) Save(ctx context.Context, f Fetched) (store.Record, error) {
 	// （Fetched は UI を往復してくる。手数は本文から決まる派生値であって
 	// 「原本をそのまま保存する」対象ではない）。
 	moves := f.Moves
-	if kifFormat == string(format.KIF) {
+	if kifFormat == string(format.KIF) || kifFormat == string(format.CSA) {
 		moves = countMoves(f.KIF)
 	}
 
