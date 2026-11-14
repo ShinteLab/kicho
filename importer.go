@@ -11,7 +11,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ShinteLab/core/kifu"
-	"github.com/ShinteLab/kicho/format"
 	"github.com/ShinteLab/kicho/scrape"
 	"github.com/ShinteLab/kicho/store"
 )
@@ -134,7 +133,7 @@ func ParseKIF(text string) (kifu.Document, error) {
 // 解析結果（棋戦名・対局者・日付・手数・終局）は一覧と検索のために使うだけで、
 // 本文は整形し直さない。整形すると変化・コメント・不成などの情報が落ちるため。
 func (l *Library) importDocument(ctx context.Context, text, source, sourceURL, encoding string) (store.Record, error) {
-	doc, err := parseImportable(text)
+	doc, kf, err := parseImportable(text)
 	if err != nil {
 		return store.Record{}, err
 	}
@@ -153,8 +152,8 @@ func (l *Library) importDocument(ctx context.Context, text, source, sourceURL, e
 		EndMark:   doc.EndMark(),
 		Moves:     len(doc.Moves),
 
-		Body:     text, // 原本そのまま
-		Format:   string(format.KIF),
+		Body:     text, // 原本そのまま（CSA なら CSA のまま）
+		Format:   string(kf),
 		Encoding: encoding,
 	})
 }

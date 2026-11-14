@@ -2,12 +2,14 @@ package kicho
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
 
 	"github.com/ShinteLab/core/kifu"
 
+	"github.com/ShinteLab/kicho/format"
 	"github.com/ShinteLab/kicho/scrape"
 	"github.com/ShinteLab/kicho/store"
 )
@@ -120,11 +122,11 @@ func (f *Fetcher) Refresh(ctx context.Context, source, sourceID string) (Fetched
 // PreviewKIF は KIF テキストを解析して内容を返す（**保存はしない**）。
 // 取り込み前に画面へ出すためのもので、ImportKIF と同じ判定を通る。
 func (f *Fetcher) PreviewKIF(text string) (Fetched, error) {
-	doc, err := parseImportable(text)
+	doc, kf, err := parseImportable(text)
 	if err != nil {
 		return Fetched{}, err
 	}
-	return fromDocument(doc, store.SourcePaste, "", text, EncodingUTF8), nil
+	return fromDocument(doc, kf, store.SourcePaste, "", text, EncodingUTF8), nil
 }
 
 // PreviewURL は URL から KIF を取得して解析する（**保存はしない**）。
@@ -145,11 +147,11 @@ func (f *Fetcher) fetchURL(ctx context.Context, rawURL string) (Fetched, error) 
 	if err != nil {
 		return Fetched{}, err
 	}
-	doc, err := parseImportable(text)
+	doc, kf, err := parseImportable(text)
 	if err != nil {
 		return Fetched{}, err
 	}
-	got := fromDocument(doc, store.SourceURL, rawURL, text, encoding)
+	got := fromDocument(doc, kf, store.SourceURL, rawURL, text, encoding)
 	got.SourceID = sourceIDForURL(rawURL)
 	return got, nil
 }
@@ -225,20 +227,40 @@ func (f *Fetcher) resolveRyuohInput(ctx context.Context, in string) (string, err
 	return f.yomiuri.FetchKifuID(ctx, in)
 }
 
-// parseImportable は取り込む前の KIF を解析する。
+// parseImportable は取り込む前の棋譜（KIF / CSA）を解析し、形式も返す。
 //
 // **「指し手が 0 手」はエラーにしない**（対局前の中継棋譜は正当に存在する）。
-// KIF かどうかはヘッダも指し手も取れなかったかどうかで判断する。
-func parseImportable(text string) (kifu.Document, error) {
+// 棋譜かどうかはヘッダも指し手も取れなかったかどうかで判断する。
+//
+// **CSA も受ける**（2026-11-15）。見分けも読み取りも `core/kifu`（`IsCSA` / `ParseCSA`）。
+// ⚠️ **本文は CSA のまま保存する**（形式は `format.CSA`。KIF に組み直さない ——
+// 原本をそのまま持つのが kicho の約束で、KIF にしたいなら配るときに変換する）。
+// ⚠️ **CSA の指し手が途中で読めなくても断らない**（`kifu.ErrCSAMoves`）。KIF の
+// `Parse` も指し手の中身までは確かめないのと揃える。本文は原本のまま残るので何も失わない
+// （手数などの一覧の値が読めたところまでになるだけ）。
+func parseImportable(text string) (kifu.Document, format.Format, error) {
 	if strings.TrimSpace(text) == "" {
-		return kifu.Document{}, ErrEmptyKifu
+		return kifu.Document{}, "", ErrEmptyKifu
+	}
+	doc, f, err := parseKifu(text)
+	if err != nil {
+		return kifu.Document{}, "", err
+	}
+	if doc.Empty() && doc.Start == "" {
+		return kifu.Document{}, "", ErrNotKifu
+	}
+	return doc, f, nil
+}
+
+// parseKifu は本文を形式を見分けて読む（CSA なら CSA、それ以外は KIF）。
+func parseKifu(text string) (kifu.Document, format.Format, error) {
+	if kifu.IsCSA(text) {
+		doc, err := kifu.ParseCSA(text)
+		if err != nil && !errors.Is(err, kifu.ErrCSAMoves) {
+			return kifu.Document{}, format.CSA, err
+		}
+		return doc, format.CSA, nil
 	}
 	doc, err := kifu.Parse(text)
-	if err != nil {
-		return kifu.Document{}, err
-	}
-	if doc.Empty() {
-		return kifu.Document{}, ErrNotKifu
-	}
-	return doc, nil
+	return doc, format.KIF, err
 }

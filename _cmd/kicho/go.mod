@@ -22,7 +22,7 @@ require (
 )
 
 require (
-	github.com/ShinteLab/core v0.2.0 // indirect
+	github.com/ShinteLab/core v0.3.0 // indirect
 	github.com/ShinteLab/kicho v0.0.0-00010101000000-000000000000
 	github.com/adrg/xdg v0.5.3 // indirect
 	github.com/coder/websocket v1.8.14 // indirect

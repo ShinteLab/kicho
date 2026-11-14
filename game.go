@@ -84,7 +84,7 @@ func fromYomiuri(g *scrape.Game) Fetched {
 // 本文は**サイトが配信している原本のまま**運ぶ（整形し直さない）。
 // 画面に出すメタデータだけ解析結果から取る。
 func (f *Fetcher) fromShogiLive(g *scrape.LiveKifu) Fetched {
-	got := fromDocument(g.Doc, store.SourceShogiLive, "", g.KIF, g.Encoding)
+	got := fromDocument(g.Doc, format.KIF, store.SourceShogiLive, "", g.KIF, g.Encoding)
 	got.SourceID = g.SourceID
 	// 諸元: どこから取ったか。人が開いて確認するのは .kif ではなく中継ページ。
 	got.SourceURL = f.shogilive.ViewerURL(g.SourceID)
@@ -121,7 +121,9 @@ func (f *Fetcher) fromShogiDB2(g *scrape.ShogiDB2Game) Fetched {
 // **KIF は解析結果を組み立て直したものではなく原本（body）をそのまま入れる。**
 // 保存されるのも原本なので、画面と保存内容を食い違わせないため
 // （組み立て直すと変化・コメント・不成などが落ちる）。
-func fromDocument(doc kifu.Document, source, sourceURL, body, encoding string) Fetched {
+//
+// f は本文の形式（KIF / CSA）。⚠️ **`KIF` という名前の欄でも中身は原本の形式のまま**。
+func fromDocument(doc kifu.Document, f format.Format, source, sourceURL, body, encoding string) Fetched {
 	if encoding == "" {
 		encoding = EncodingUTF8
 	}
@@ -138,18 +140,20 @@ func fromDocument(doc kifu.Document, source, sourceURL, body, encoding string) F
 		Moves:     len(doc.Moves),
 
 		KIF:      body,
-		Format:   string(format.KIF),
+		Format:   string(f),
 		Encoding: encoding,
 	}
 }
 
-// countMoves は KIF テキストの手数を数える。
+// countMoves は本文（KIF / CSA）の手数を数える。
 //
 // **行数を数えるのではなく core/kifu で解析する。** 連盟が配信する .kif は
 // `# --- Kifu for Windows ...` に始まり、指し手の間に `*` の観戦記コメントが
 // 大量に入る。行を数えるとそれらまで手数に入る。
-func countMoves(kifText string) int {
-	doc, err := kifu.Parse(kifText)
+//
+// 形式は本文から見分ける（`parseKifu`。保存する形式の欄とは独立に、中身で数える）。
+func countMoves(body string) int {
+	doc, _, err := parseKifu(body)
 	if err != nil {
 		return 0
 	}
