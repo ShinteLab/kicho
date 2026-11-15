@@ -37,6 +37,23 @@ func (l *Library) ImportKIF(ctx context.Context, text string) (store.Record, err
 	return l.importDocument(ctx, text, store.SourcePaste, "", EncodingUTF8)
 }
 
+// ImportKIFWithEncoding は**文字コードを判別済みの本文**を、元の文字コードを記録して保存する
+// （2026-11-15。ファイルから読んだ棋譜。読むのは使う側で、判別は `DecodeKIF`）。
+//
+// text は UTF-8 に寄せた本文、encoding は元の文字コード（`EncodingUTF8` / `EncodingShiftJIS`）。
+// それ以外は `ImportKIF` と同じ（取得元は貼り付け・登録のたびに新しい棋譜）。
+//
+// ⚠️ **知らない文字コードはエラー**（黙って utf-8 にしない）。文字コードは原本が何だったかの記録なので、
+// 取り違えた値を残すくらいなら断る。
+func (l *Library) ImportKIFWithEncoding(ctx context.Context, text, encoding string) (store.Record, error) {
+	switch encoding {
+	case EncodingUTF8, EncodingShiftJIS:
+	default:
+		return store.Record{}, fmt.Errorf("kicho: 知らない文字コードです: %q", encoding)
+	}
+	return l.importDocument(ctx, text, store.SourcePaste, "", encoding)
+}
+
 // ImportURL は URL から KIF を取得して保存する。
 //
 // スクレイピングではなく、URL の中身をそのまま KIF として読む。

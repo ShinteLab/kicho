@@ -96,3 +96,20 @@ func TestImportCSABrokenMoves(t *testing.T) {
 		t.Errorf("Body / Moves = %q / %d", rec.Body, rec.Moves)
 	}
 }
+
+// **ファイルから読んだ棋譜は元の文字コードを記録する**（2026-11-15。`ImportKIFWithEncoding`）。
+func TestImportKIFWithEncoding(t *testing.T) {
+	lib := newTestLibrary(t)
+	ctx := context.Background()
+	rec, err := lib.ImportKIFWithEncoding(ctx, csaSample, EncodingShiftJIS)
+	if err != nil {
+		t.Fatalf("ImportKIFWithEncoding: %v", err)
+	}
+	if rec.Encoding != EncodingShiftJIS || rec.Format != string(format.CSA) || rec.Body != csaSample {
+		t.Errorf("Encoding / Format = %q / %q", rec.Encoding, rec.Format)
+	}
+	// 知らない文字コードは黙って utf-8 にしない。
+	if _, err := lib.ImportKIFWithEncoding(ctx, csaSample, "euc-jp"); err == nil {
+		t.Error("知らない文字コードが通った")
+	}
+}
