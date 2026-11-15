@@ -55,6 +55,35 @@ func TestPreviewCSA(t *testing.T) {
 	}
 }
 
+// **形式は本文から決め直す**（2026-11-15）。画面を往復して形式の欄が落ちた・食い違った
+// Fetched でも、CSA の本文は csa、KIF の本文は kif として記録すること
+// （ikkyoku の中継カードの「保存」は形式を運んでいなかった）。
+func TestSaveDerivesFormatFromBody(t *testing.T) {
+	lib := newTestLibrary(t)
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name, body, given string
+		want              format.Format
+	}{
+		{"形式の欄が空の CSA", csaSample, "", format.CSA},
+		{"kif と言ってくる CSA", csaSample, string(format.KIF), format.CSA},
+		{"csa と言ってくる KIF", importSample, string(format.CSA), format.KIF},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec, err := lib.Save(ctx, Fetched{
+				Source: store.SourceURL, SourceID: "https://example.com/" + tt.name,
+				KIF: tt.body, Format: tt.given,
+			})
+			if err != nil {
+				t.Fatalf("Save: %v", err)
+			}
+			if rec.Format != string(tt.want) {
+				t.Errorf("Format = %q, want %q", rec.Format, tt.want)
+			}
+		})
+	}
+}
+
 // CSA の指し手が途中で読めなくても断らない（本文は原本のまま残る）。
 func TestImportCSABrokenMoves(t *testing.T) {
 	lib := newTestLibrary(t)

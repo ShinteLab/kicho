@@ -254,7 +254,7 @@ func parseImportable(text string) (kifu.Document, format.Format, error) {
 
 // parseKifu は本文を形式を見分けて読む（CSA なら CSA、それ以外は KIF）。
 func parseKifu(text string) (kifu.Document, format.Format, error) {
-	if kifu.IsCSA(text) {
+	if bodyFormat(text) == format.CSA {
 		doc, err := kifu.ParseCSA(text)
 		if err != nil && !errors.Is(err, kifu.ErrCSAMoves) {
 			return kifu.Document{}, format.CSA, err
