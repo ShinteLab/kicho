@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/ShinteLab/kicho/format"
 	"github.com/ShinteLab/kicho/httpapi"
 	"github.com/ShinteLab/kicho/scrape"
 	"github.com/ShinteLab/kicho/settings"
@@ -203,10 +202,12 @@ func (l *Library) Save(ctx context.Context, f Fetched) (store.Record, error) {
 		return store.Record{}, err
 	}
 
-	kifFormat := f.Format
-	if kifFormat == "" {
-		kifFormat = string(format.KIF)
-	}
+	// 形式は本文から決め直す（2026-11-15）。**画面が持っている値を信じない**（下の手数と同じ）。
+	// ⚠️ **`f.Format` を使わないこと** —— Fetched は UI を往復してくるので、形式の欄を
+	// 運ばない使う側（ikkyoku の中継カードの「保存」がそうだった）を通ると
+	// **CSA の本文が kif として記録される**。原本の形式は、あとで別の形式に変換して
+	// 配るときの拠り所なので、取り違えると変換が壊れる。
+	kifFormat := string(bodyFormat(f.KIF))
 	encoding := f.Encoding
 	if encoding == "" {
 		encoding = EncodingUTF8
@@ -215,10 +216,7 @@ func (l *Library) Save(ctx context.Context, f Fetched) (store.Record, error) {
 	// 手数は本文から数え直す。**画面が持っている値を信じない**
 	// （Fetched は UI を往復してくる。手数は本文から決まる派生値であって
 	// 「原本をそのまま保存する」対象ではない）。
-	moves := f.Moves
-	if kifFormat == string(format.KIF) || kifFormat == string(format.CSA) {
-		moves = countMoves(f.KIF)
-	}
+	moves := countMoves(f.KIF)
 
 	rec, err := l.store.Save(ctx, store.Game{
 		Source:    source,

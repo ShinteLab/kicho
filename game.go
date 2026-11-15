@@ -42,7 +42,9 @@ type Fetched struct {
 
 	// KIF は**登録された形式の原本**。整形し直さない。
 	KIF string
-	// Format は KIF の形式（空なら kif）。
+	// Format は本文の形式（"kif" / "csa"）。**画面に出すための値**。
+	//
+	// ⚠️ **`Library.Save` はこの値を使わず、本文から決め直す**（UI を往復してくるため）。
 	Format string
 	// Encoding は元の文字コード（本文は UTF-8 に寄せてある。空なら utf-8）。
 	Encoding string
@@ -143,6 +145,17 @@ func fromDocument(doc kifu.Document, f format.Format, source, sourceURL, body, e
 		Format:   string(f),
 		Encoding: encoding,
 	}
+}
+
+// bodyFormat は本文の形式を見分ける（CSA でなければ KIF）。
+//
+// ⚠️ **見分けは `core/kifu` に寄せる**（`parseKifu` と同じ判定）。受ける形式を増やしたら
+// ここと `parseKifu` に足すこと。
+func bodyFormat(body string) format.Format {
+	if kifu.IsCSA(body) {
+		return format.CSA
+	}
+	return format.KIF
 }
 
 // countMoves は本文（KIF / CSA）の手数を数える。
