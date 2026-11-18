@@ -72,6 +72,29 @@ kicho 自前の `id` と `created_at` は維持されたまま内容だけ更新
 - 2 列とも `games_fts` に入れてある。⚠️ **FTS の列を変えたら `whereClause` の
   LIKE 側も揃える**（語の長さで当たり外れが割れる）
 
+### エラーの印と本文のダイジェスト（`error_move` / `error` / `body_digest`。v6）
+
+- `error_move` は本文を盤に当てられない最初の手（1 始まり。0 = エラー無し）、`error` はその理由。
+  `moves` と同じく**書式を知っている呼び出し側が本文から計算して渡す**（`kicho.inspectBody`）。
+  **エラーがあっても保存は断らない**（原本を残すのが役目。訂正は kicho の外）
+- `body_digest` は本文の sha256（16 進）。`Save` / `SaveDerived` が本文から計算する。
+  移行（v5 → v6）で既存の行も埋める
+
+### 派生棋譜（親子。`parent_id` / `relation` / `parent_digest`。v6）
+
+保存済みの棋譜（親）から作った棋譜（子。訂正など）。書くのは `SaveDerived` だけ。
+
+- 子は**毎回新しい棋譜**（`source = derived`、`source_id` は新しい UUID）。取り直せない
+- ⚠️ **`Save` は親子の 3 列に触らない**（upsert の SET にも INSERT の列にも入れない）。
+  入れると親を取り直して保存した時点で子との繋がりが消える。⚠️ **`Save` は `derived` を断る**
+  （親の無い子ができる）
+- `parent_digest` は**子を作った時点の親の `body_digest`**。読むたびに親と比べて
+  `Record.ParentChanged`（親が取り直されて本文が変わった）を出す
+- ⚠️ **親を消しても子は消さず、`parent_id` も空にしない。** 訂正は人の手間がかかった成果なので
+  親と一緒に消えては困る。親が無いことは join で分かる（`Record.ParentMissing`）
+- 親の有無・親のダイジェスト・子の件数（`Record.Children`）は `metaColumns` で読む。
+  ⚠️ **読み口の FROM には必ず `joinParent` を付ける**（`whereClause` と `Get` / `FindBySource` / `List`）
+
 ### watches
 
 - 主キーは `(source, source_id)`。`games` の UNIQUE 索引ともフロントの `cardKey` とも
@@ -84,6 +107,10 @@ kicho 自前の `id` と `created_at` は維持されたまま内容だけ更新
 ## マイグレーション
 
 `PRAGMA user_version` で版を管理する（`migrate.go`）。
+
+- v5 → v6（`migrateV5ToV6`）は**どの版から来ても最後に通す**（足りない列だけ足し、
+  `body_digest` が空の行だけ埋めるので何度流しても同じ）。⚠️ 接続は 1 本なので、
+  **トランザクションを持ったまま `db.Query` しないこと**（止まる）
 
 - 版を上げるときは `schemaVersion` を増やし、移行 SQL を足す
 - v1 より前の DB は `user_version` が 0 なので、`games` の形

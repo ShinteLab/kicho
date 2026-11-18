@@ -16,7 +16,12 @@ package store
 //	5: 人が書く欄を games に追加。直した対局名（event_edited）と備考（note）。
 //	   取得した値（event）は書き換えず別の列に持つ（Save の upsert が event を
 //	   上書きするため。詳しくは gamesSchemaSQL）。検索の索引にも含める
-const schemaVersion = 5
+//	6: エラーの印と派生棋譜（親子）を games に追加。
+//	   - error_move / error: 本文を盤に当てられない最初の手と理由（0 = エラー無し）
+//	   - body_digest: 本文の sha256。子が「作った時点の親」から変わったかを見るため
+//	   - parent_id / relation / parent_digest: 派生棋譜（訂正など）の親との繋がり。
+//	     **Save は触らない**（取り直しで親を保存し直しても子との繋がりが消えない）
+const schemaVersion = 6
 
 // schemaSQL は最新スキーマ。マイグレーションでも同じものを使う。
 const schemaSQL = gamesSchemaSQL + gamesFTSSchemaSQL + watchesSchemaSQL
@@ -43,7 +48,19 @@ CREATE TABLE IF NOT EXISTS games (
     -- 取り直して保存した時点で upsert が event を上書きして編集が黙って消えるのと、
     -- 「直してあること」が判らなくなるため。
     event_edited TEXT NOT NULL DEFAULT '',
-    note         TEXT NOT NULL DEFAULT ''
+    note         TEXT NOT NULL DEFAULT '',
+    -- エラーの印(v6)。本文から呼び出し側が計算して Save が書く(画面の値は使わない)。
+    -- error_move は盤に当てられない最初の手(1 始まり。0 = エラー無し)、error はその理由。
+    error_move  INTEGER NOT NULL DEFAULT 0,
+    error       TEXT NOT NULL DEFAULT '',
+    -- body_digest は本文(game_kifu.body)の sha256 の 16 進。Save と SaveDerived が書く。
+    body_digest TEXT NOT NULL DEFAULT '',
+    -- 派生棋譜(訂正など)の親との繋がり(v6)。書くのは SaveDerived だけで、Save は触らない
+    -- (upsert の SET にも INSERT の列にも入れない)。親を消しても子は消さず、ここも空にしない
+    -- (親が無いことは join で分かる)。parent_digest は子を作った時点の親の body_digest。
+    parent_id     TEXT NOT NULL DEFAULT '',
+    relation      TEXT NOT NULL DEFAULT '',
+    parent_digest TEXT NOT NULL DEFAULT ''
 );
 
 -- 同じ棋譜を取り直しても重複させない。
@@ -53,6 +70,8 @@ CREATE INDEX IF NOT EXISTS idx_games_started_at ON games(started_at DESC);
 -- 対局者の完全一致（部分一致は FTS 側）。
 CREATE INDEX IF NOT EXISTS idx_games_black ON games(black);
 CREATE INDEX IF NOT EXISTS idx_games_white ON games(white);
+-- 親から子を引く(Children と一覧の子の件数)。
+CREATE INDEX IF NOT EXISTS idx_games_parent ON games(parent_id);
 
 -- 棋譜本文は分離する。1局を開くときだけ触るので、一覧・検索の
 -- スキャンが本文のページを読まずに済む。
@@ -194,6 +213,19 @@ DROP TRIGGER IF EXISTS games_fts_ad;
 DROP TRIGGER IF EXISTS games_fts_au;
 DROP TABLE IF EXISTS games_fts;
 `
+
+// v5 → v6: エラーの印と派生棋譜（親子）の列。呼び出し側(migrateV5ToV6)が
+// 足りない列だけを足し、索引を作り、既存の本文から body_digest を埋める。
+var v6Columns = []struct{ name, ddl string }{
+	{"error_move", `ALTER TABLE games ADD COLUMN error_move INTEGER NOT NULL DEFAULT 0`},
+	{"error", `ALTER TABLE games ADD COLUMN error TEXT NOT NULL DEFAULT ''`},
+	{"body_digest", `ALTER TABLE games ADD COLUMN body_digest TEXT NOT NULL DEFAULT ''`},
+	{"parent_id", `ALTER TABLE games ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''`},
+	{"relation", `ALTER TABLE games ADD COLUMN relation TEXT NOT NULL DEFAULT ''`},
+	{"parent_digest", `ALTER TABLE games ADD COLUMN parent_digest TEXT NOT NULL DEFAULT ''`},
+}
+
+const v6IndexSQL = `CREATE INDEX IF NOT EXISTS idx_games_parent ON games(parent_id);`
 
 // rebuildGamesFTSSQL は FTS を作り直し、既存の games から索引を組み直す。
 const rebuildGamesFTSSQL = gamesFTSSchemaSQL + `

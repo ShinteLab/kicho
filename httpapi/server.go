@@ -382,15 +382,25 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		White     string `json:"white"`
 		StartedAt string `json:"startedAt,omitempty"`
 		URL       string `json:"url"`
+		// エラーの印（盤に当てられない最初の手と理由）。無ければ出さない。
+		ErrorMove int    `json:"errorMove,omitempty"`
+		Error     string `json:"error,omitempty"`
+		// 派生棋譜（訂正など）の親と関係。親が無ければ出さない。
+		ParentID string `json:"parentId,omitempty"`
+		Relation string `json:"relation,omitempty"`
 	}
 	out := make([]item, 0, len(list))
 	for _, rec := range list {
 		it := item{
-			ID:    rec.ID,
-			Event: rec.Event,
-			Black: rec.Black,
-			White: rec.White,
-			URL:   KifuPath(rec.ID),
+			ID:        rec.ID,
+			Event:     rec.Event,
+			Black:     rec.Black,
+			White:     rec.White,
+			URL:       KifuPath(rec.ID),
+			ErrorMove: rec.ErrorMove,
+			Error:     rec.Error,
+			ParentID:  rec.ParentID,
+			Relation:  rec.Relation,
 		}
 		if !rec.StartedAt.IsZero() {
 			it.StartedAt = rec.StartedAt.Format(time.RFC3339)

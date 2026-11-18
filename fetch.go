@@ -127,7 +127,7 @@ func (f *Fetcher) Refresh(ctx context.Context, source, sourceID string) (Fetched
 	case store.SourceURL:
 		return f.fetchURL(ctx, sourceID)
 	default:
-		// paste は取得元が無いので取り直せない。
+		// paste と derived は取得元が無いので取り直せない（`refetchable`）。
 		return Fetched{}, fmt.Errorf("%w: %s", ErrUnsupportedSource, source)
 	}
 }
