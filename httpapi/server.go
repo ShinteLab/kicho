@@ -389,6 +389,8 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		// 派生棋譜（訂正など）の親と関係。親が無ければ出さない。
 		ParentID string `json:"parentId,omitempty"`
 		Relation string `json:"relation,omitempty"`
+		// 指摘（人や利用側が外から付けた印）の数。無ければ出さない。
+		Flags int `json:"flags,omitempty"`
 	}
 	out := make([]item, 0, len(list))
 	for _, rec := range list {
@@ -402,6 +404,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 			Error:     rec.Error,
 			ParentID:  rec.ParentID,
 			Relation:  rec.Relation,
+			Flags:     rec.Flags,
 		}
 		if !rec.StartedAt.IsZero() {
 			it.StartedAt = rec.StartedAt.Format(time.RFC3339)

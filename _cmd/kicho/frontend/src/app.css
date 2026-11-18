@@ -366,6 +366,23 @@ button.danger {
 }
 
 /* 親子の印のうち、親の側に変化があったもの（親が更新・親は削除済み）。 */
+/* 指摘（外から付けた印）。エラーの印（.error-badge）と見分けがつくよう枠線だけの控えめな形。 */
+.flag-badge {
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  font-size: 11px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+
+.flag-badge.stale {
+  color: var(--warn-text);
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+}
+
 .source-tag.warn-tag {
   color: var(--warn-text);
   background: var(--warn-bg);

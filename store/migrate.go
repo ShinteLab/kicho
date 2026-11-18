@@ -108,6 +108,11 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 
+	// v6 → v7: 指摘（game_flags）。CREATE ... IF NOT EXISTS なので何度流しても同じ。
+	if err := migrateV6ToV7(db); err != nil {
+		return err
+	}
+
 	return setVersion(db, schemaVersion)
 }
 
@@ -162,6 +167,22 @@ func migrateV5ToV6(db *sql.DB, cols map[string]bool) error {
 		}
 	}
 
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration: %w", err)
+	}
+	return nil
+}
+
+// migrateV6ToV7 は指摘の表（game_flags）と索引を作る。1 トランザクションで行う。
+func migrateV6ToV7(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin migration: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(gameFlagsSchemaSQL); err != nil {
+		return fmt.Errorf("migrate to v7: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
 	}

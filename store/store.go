@@ -133,6 +133,17 @@ type Record struct {
 	ParentMissing bool
 	// Children はこの棋譜を親に持つ棋譜の数。読むたびに計算する。
 	Children int
+
+	// ここから下は指摘（game_flags。人や利用側が外から付けた印）の集計。読むたびに計算する。
+	// エラーの印（ErrorMove）とは別物（あちらは kicho が本文から見つけたもの）。
+	//
+	// Flags は指摘の数。
+	Flags int
+	// FlaggedMove は指摘された手のうち最も若い手（1 始まり）。指摘が無いとき、
+	// または棋譜全体についての指摘（move 0）しか無いときは 0。指摘があるかは Flags で見ること。
+	FlaggedMove int
+	// FlagsStale は指摘のどれかが付けたあとに本文が変わったか（Flag.Stale のどれか）。
+	FlagsStale bool
 }
 
 // bodyDigest は本文のダイジェスト(sha256 の 16 進)。
@@ -433,7 +444,10 @@ const metaColumns = `g.id, g.source, g.source_id, g.source_url, g.event, g.handi
                      g.error_move, g.error, g.body_digest,
                      g.parent_id, g.relation, g.parent_digest,
                      p.id IS NOT NULL, COALESCE(p.body_digest, ''),
-                     (SELECT COUNT(*) FROM games c WHERE c.parent_id = g.id)`
+                     (SELECT COUNT(*) FROM games c WHERE c.parent_id = g.id),
+                     (SELECT COUNT(*) FROM game_flags fl WHERE fl.game_id = g.id),
+                     COALESCE((SELECT MIN(fl.move) FROM game_flags fl WHERE fl.game_id = g.id AND fl.move > 0), 0),
+                     EXISTS(SELECT 1 FROM game_flags fl WHERE fl.game_id = g.id AND fl.body_digest <> g.body_digest)`
 
 // joinParent は親を引く(親が無い・消えた行は p が NULL になる)。
 const joinParent = ` LEFT JOIN games p ON g.parent_id <> '' AND p.id = g.parent_id`
@@ -468,7 +482,8 @@ func scanRecord(sc scanner, withBody bool) (Record, error) {
 		&createdAt, &updatedAt, &r.EventEdited, &r.Note,
 		&r.ErrorMove, &r.Error, &r.BodyDigest,
 		&r.ParentID, &r.Relation, &r.ParentDigest,
-		&parentExists, &parentBodyDigest, &r.Children}
+		&parentExists, &parentBodyDigest, &r.Children,
+		&r.Flags, &r.FlaggedMove, &r.FlagsStale}
 	if withBody {
 		dest = append(dest, &r.Body, &r.Format, &r.Encoding)
 	}
@@ -607,6 +622,8 @@ type Query struct {
 	To   time.Time
 	// FinishedOnly が true なら終局済みのみ。
 	FinishedOnly bool
+	// NeedsAttention が true なら、エラーの印（ErrorMove > 0）か指摘が 1 つ以上ある棋譜のみ。
+	NeedsAttention bool
 	// Limit は取得件数の上限(0 なら無制限)、Offset は読み飛ばす件数。
 	Limit  int
 	Offset int
@@ -664,6 +681,10 @@ func whereClause(q Query) (sql string, args []any) {
 	}
 	if q.FinishedOnly {
 		where = append(where, `g.end_mark <> ''`)
+	}
+	if q.NeedsAttention {
+		where = append(where,
+			`(g.error_move > 0 OR EXISTS(SELECT 1 FROM game_flags fl WHERE fl.game_id = g.id))`)
 	}
 
 	if len(where) > 0 {
