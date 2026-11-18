@@ -40,6 +40,9 @@ const (
 	// SourceShogiDB2 は将棋DB2(shogidb2.com)。SourceID は対局ページの
 	// `/games/{id}` のハッシュで、取り直しても同じ棋譜として更新される。
 	SourceShogiDB2 = "shogidb2"
+	// SourceFuwalete は「ふわりと将棋」(fuwalete.com)の棋譜速報。SourceID は記事の
+	// slug(例 "ito-365549")で、取り直しても同じ棋譜として更新される。
+	SourceFuwalete = "fuwalete"
 	// SourceURL は任意の URL から KIF を取得したもの。
 	SourceURL = "url"
 	// SourcePaste は KIF テキストを直接貼り付けたもの。
