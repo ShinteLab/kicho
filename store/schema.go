@@ -21,10 +21,12 @@ package store
 //	   - body_digest: 本文の sha256。子が「作った時点の親」から変わったかを見るため
 //	   - parent_id / relation / parent_digest: 派生棋譜（訂正など）の親との繋がり。
 //	     **Save は触らない**（取り直しで親を保存し直しても子との繋がりが消えない）
-const schemaVersion = 6
+//	7: 指摘（game_flags）を追加。人や利用側（ikkyoku）が「この手が違う」と外から付ける印。
+//	   本文から計算し直すエラーの印（error_move）とは別に持ち、**Save は触らない**
+const schemaVersion = 7
 
 // schemaSQL は最新スキーマ。マイグレーションでも同じものを使う。
-const schemaSQL = gamesSchemaSQL + gamesFTSSchemaSQL + watchesSchemaSQL
+const schemaSQL = gamesSchemaSQL + gamesFTSSchemaSQL + watchesSchemaSQL + gameFlagsSchemaSQL
 
 // gamesSchemaSQL は保存済みの棋譜（蔵書）。
 const gamesSchemaSQL = `
@@ -226,6 +228,32 @@ var v6Columns = []struct{ name, ddl string }{
 }
 
 const v6IndexSQL = `CREATE INDEX IF NOT EXISTS idx_games_parent ON games(parent_id);`
+
+// gameFlagsSchemaSQL は指摘（v7）。人や利用側が棋譜に外から付ける「この手が違う」の印。
+//
+// **本文から計算し直すエラーの印（games.error_move）とは別物。** あちらは「盤に当てられない」を
+// kicho が保存のたびに見つけ直す値で、こちらは「盤には当たるが実際と違う」（記録の打ち間違いが
+// 指せる手になっている・反則手）のように kicho には分からないことを外から書く欄。
+//
+//   - ⚠️ **Save（取り直し）は触らない。** 触ると取り直した時点で指摘が黙って消える
+//   - 棋譜を消したら指摘も消える（ON DELETE CASCADE）。指摘は「その棋譜の本文」についてのもので、
+//     派生棋譜（子）と違って人の成果物ではないため
+//   - body_digest は付けた時点の games.body_digest。今の本文と違えば「指摘のあとに本文が
+//     変わった」（Flag.Stale）。消すかどうかは付けた側が決める
+//   - move は指摘する手（1 始まり）。0 は棋譜全体についての指摘
+//   - 列名を by にしないこと（SQL の予約語）。誰が付けたかは flagged_by
+const gameFlagsSchemaSQL = `
+CREATE TABLE IF NOT EXISTS game_flags (
+    id          TEXT PRIMARY KEY,
+    game_id     TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    move        INTEGER NOT NULL DEFAULT 0,
+    reason      TEXT NOT NULL,
+    flagged_by  TEXT NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL DEFAULT 0,
+    body_digest TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_game_flags_game ON game_flags(game_id);
+`
 
 // rebuildGamesFTSSQL は FTS を作り直し、既存の games から索引を組み直す。
 const rebuildGamesFTSSQL = gamesFTSSchemaSQL + `

@@ -320,6 +320,35 @@ func (l *Library) Children(ctx context.Context, id string) ([]store.Record, erro
 	return l.store.Children(ctx, id)
 }
 
+// Flag は棋譜に指摘を付ける（「この手が実際と違う」など、kicho が本文からは見つけられないこと）。
+//
+// move は指摘する手（1 始まり。0 は棋譜全体）、by は誰が付けたか（"ikkyoku" / "user" など）。
+// 理由が空なら ErrNoInput、手が負なら ErrInvalidMove、棋譜が無ければ store.ErrNotFound。
+//
+// **エラーの印（Record.ErrorMove）とは別に持つ。** あちらは保存のたびに本文から計算し直すので、
+// 外から書いても取り直しで消える。指摘は取り直しても残り、本文が変わると Flag.Stale が立つ。
+// ⚠️ kicho は指摘の中身を確かめない（判断も訂正もしない）。反則手を見つけるのは
+// 合法手の判定を持つ利用側（ikkyoku）。
+func (l *Library) Flag(ctx context.Context, id string, move int, reason, by string) (store.Flag, error) {
+	if strings.TrimSpace(reason) == "" {
+		return store.Flag{}, fmt.Errorf("%w: 指摘の理由が空です", ErrNoInput)
+	}
+	if move < 0 {
+		return store.Flag{}, fmt.Errorf("%w: %d", ErrInvalidMove, move)
+	}
+	return l.store.AddFlag(ctx, id, move, reason, by)
+}
+
+// Unflag は指摘を外す（flagID は Flag.ID）。無ければ store.ErrNotFound。
+func (l *Library) Unflag(ctx context.Context, flagID string) error {
+	return l.store.RemoveFlag(ctx, flagID)
+}
+
+// Flags は棋譜の指摘を手の順に返す。無ければ空。
+func (l *Library) Flags(ctx context.Context, id string) ([]store.Flag, error) {
+	return l.store.Flags(ctx, id)
+}
+
 // resolveSource は取得元と諸元(source_url)を決め直す。
 //
 // **Fetched は UI を往復してくるので、画面が持っている source_url を信じない。**

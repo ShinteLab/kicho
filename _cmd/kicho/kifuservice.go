@@ -76,6 +76,12 @@ type GameSummary struct {
 	ParentChanged bool   `json:"parentChanged"`
 	ParentMissing bool   `json:"parentMissing"`
 	Children      int    `json:"children"`
+
+	// 指摘(人や利用側が外から付けた印)の集計。保存済みの棋譜(toSummary)だけが持つ。
+	// エラーの印(ErrorMove)とは別物。FlaggedMove は 0 なら棋譜全体の指摘だけ(か指摘なし)。
+	Flags       int  `json:"flags"`
+	FlaggedMove int  `json:"flaggedMove"`
+	FlagsStale  bool `json:"flagsStale"`
 }
 
 // GameDetail は棋譜1件の詳細(KIF 本文つき)。
@@ -110,6 +116,9 @@ func toSummary(r store.Record) GameSummary {
 		ParentChanged: r.ParentChanged,
 		ParentMissing: r.ParentMissing,
 		Children:      r.Children,
+		Flags:         r.Flags,
+		FlaggedMove:   r.FlaggedMove,
+		FlagsStale:    r.FlagsStale,
 	}
 	if !r.StartedAt.IsZero() {
 		s.StartedAt = r.StartedAt.Format(time.RFC3339)

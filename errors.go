@@ -13,6 +13,8 @@ import "errors"
 var (
 	// ErrNoInput は URL / 棋譜 ID が空。
 	ErrNoInput = errors.New("URL または棋譜 ID を入力してください")
+	// ErrInvalidMove は指摘する手の数が負（Library.Flag）。
+	ErrInvalidMove = errors.New("指摘する手が正しくありません")
 	// ErrEmptyKifu は本文が空（取得も貼り付けも中身が無い）。
 	ErrEmptyKifu = errors.New("棋譜が空です")
 	// ErrNotKifu は棋譜（KIF / CSA）として読み取れなかった（HTML やただの文章）。

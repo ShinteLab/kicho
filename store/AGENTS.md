@@ -42,6 +42,7 @@ games       メタデータのみ（小さく保つ）
 game_kifu   KIF 本文（game_id で 1:1、ON DELETE CASCADE）
 games_fts   FTS5(trigram) の外部コンテンツ索引 + 同期トリガ3つ
 watches     追跡中の中継（＝仮の一覧。棋譜本文は持たない）
+game_flags  指摘（人や利用側が外から付ける印。game_id で N:1、ON DELETE CASCADE。v7）
 ```
 
 `(source, source_id)` に UNIQUE 制約があり、**同じ棋譜を取り直しても重複せず、
@@ -94,6 +95,24 @@ kicho 自前の `id` と `created_at` は維持されたまま内容だけ更新
   親と一緒に消えては困る。親が無いことは join で分かる（`Record.ParentMissing`）
 - 親の有無・親のダイジェスト・子の件数（`Record.Children`）は `metaColumns` で読む。
   ⚠️ **読み口の FROM には必ず `joinParent` を付ける**（`whereClause` と `Get` / `FindBySource` / `List`）
+
+### 指摘（`game_flags`。v7）
+
+人や利用側（ikkyoku）が「この手が実際と違う」と外から付ける印。書くのは `AddFlag` / `RemoveFlag` だけ。
+
+- **エラーの印（`error_move`）とは別物。** あちらは kicho が保存のたびに本文から見つけ直す
+  「盤に当てられない手」、こちらは kicho には分からないこと（指せるが実際と違う手・反則手）
+- ⚠️ **`Save` は `game_flags` に触らない。** 触ると取り直した時点で指摘が黙って消える
+- `body_digest` は**付けた時点の `games.body_digest`**。読むたびに今の本文と比べて
+  `Flag.Stale` / `Record.FlagsStale`（指摘のあとに本文が変わった）を出す。外すかは付けた側が決める。
+  付けるとき棋譜のダイジェストが空（v6 より前の保存のまま）なら本文から埋める
+- 棋譜を消したら指摘も消える（`ON DELETE CASCADE`）。指摘はその本文についてのもので、
+  派生棋譜（子）と違って人の成果物として残す理由が無い
+- `move` は 1 始まり、**0 は棋譜全体についての指摘**。`Record.FlaggedMove` は 1 以上の手の
+  うち最も若いもの（0 なら棋譜全体の指摘だけか指摘なし。有無は `Record.Flags` で見る）
+- 件数・最も若い手・古くなったか（`Record.Flags` / `FlaggedMove` / `FlagsStale`）は `metaColumns` の
+  副問い合わせで読む。「要確認」の絞り込み（`Query.NeedsAttention`）は `whereClause` に置く
+- ⚠️ **列名を `by` にしないこと**（SQL の予約語）。誰が付けたかは `flagged_by`
 
 ### watches
 

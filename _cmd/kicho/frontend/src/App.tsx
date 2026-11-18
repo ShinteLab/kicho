@@ -84,6 +84,9 @@ function cardFromWatch(w: WatchEntry): FetchCard {
     parentChanged: false,
     parentMissing: false,
     children: 0,
+    flags: 0,
+    flaggedMove: 0,
+    flagsStale: false,
     kif: "",
     encoding: "",
   };
@@ -268,6 +271,25 @@ function ErrorBadge({ errorMove, error }: { errorMove: number; error: string }) 
   return (
     <span className="error-badge" title={error}>
       ⚠ {errorMove}手目
+    </span>
+  );
+}
+
+/**
+ * 指摘（人や利用側が外から付けた印）。エラーの印（ErrorBadge）とは見た目を分ける。
+ * 付けたあとに本文が変わっていれば警告の色にして、理由はバルーンに出す。
+ *
+ * ⚠️ 値はライブラリが集計したもの（flags / flaggedMove / flagsStale）をそのまま使う。
+ */
+function FlagBadge({ g }: { g: GameSummary }) {
+  if (!g.flags) return null;
+  const label = g.flaggedMove > 0 ? `指摘 ${g.flags}（${g.flaggedMove}手目〜）` : `指摘 ${g.flags}`;
+  return (
+    <span
+      className={g.flagsStale ? "flag-badge stale" : "flag-badge"}
+      title={g.flagsStale ? "指摘のあとに本文が変わっています" : undefined}
+    >
+      {label}
     </span>
   );
 }
@@ -1074,6 +1096,7 @@ function LibraryTab({ revision }: { revision: number }) {
                 <td className="num">
                   <Moves moves={g.moves} finished={g.finished} endMark={g.endMark} />
                   <ErrorBadge errorMove={g.errorMove} error={g.error} />
+                  <FlagBadge g={g} />
                 </td>
                 <td className="actions">
                   <CopyURLButton

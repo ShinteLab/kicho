@@ -18,6 +18,12 @@
   ふわりと将棋は手によって「残り」「消費/残り」「消費だけ」と書き方が揃わない
 - **ikkyoku はエラーの印（`Fetched.ErrorMove` / `Error`、`Record.ErrorMove` / `Error`）を
   まだ出していない。** 誤記のある中継のカードが、あちらでは普通の棋譜に見える
+- **ikkyoku は指摘と訂正をまだ扱っていない。** 反則手（二歩・王手放置・打ち歩詰め）を `legal` で
+  見つけたら `Library.Flag(id, 手, 理由, "ikkyoku")` を付ける、指摘（`Record.Flags` /
+  `FlaggedMove` / `FlagsStale`）と派生棋譜（`Record.Children` / `ParentChanged`）を表示する、
+  訂正した棋譜を `SaveDerived` で子として保存する
+- kicho のアプリには指摘を付ける・外す操作が無い（表示だけ）。一覧の「要確認」の絞り込み
+  （`Query.NeedsAttention`）も画面にはまだ出していない
 - ふわりと将棋の評価値（`92%`）と AI の推奨手（`ai39銀`）は取り込んでいない（解説の行だけ）
 
 ## 形式変換
