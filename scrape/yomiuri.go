@@ -21,11 +21,16 @@ import (
 // Yomiuri は読売(竜王戦)の棋譜ページを扱う。
 type Yomiuri struct {
 	Client *http.Client
+	// MinInterval は同じ棋譜を取りに行く最短の間隔(内側なら前の結果を返す。`MinFetchInterval`)。
+	// 0 なら毎回取りに行く。`NewXxx` は MinFetchInterval を入れる(構造体を直接作ると 0)。
+	MinInterval time.Duration
+
+	recent recent[*Game]
 }
 
 // NewYomiuri は既定の HTTP クライアントを持つ Yomiuri を返す。
 func NewYomiuri() *Yomiuri {
-	return &Yomiuri{Client: &http.Client{Timeout: 30 * time.Second}}
+	return &Yomiuri{Client: &http.Client{Timeout: 30 * time.Second}, MinInterval: MinFetchInterval}
 }
 
 func (y *Yomiuri) client() *http.Client {
@@ -110,10 +115,18 @@ func PayloadURL(id string) string {
 }
 
 // FetchGame は棋譜 ID から1局分を取得する。
+//
+// ⚠️ 返す値は `MinInterval` の内側の呼び出しで共有される。**書き換えないこと。**
 func (y *Yomiuri) FetchGame(ctx context.Context, id string) (*Game, error) {
 	if id == "" {
 		return nil, fmt.Errorf("scrape: empty kifu id")
 	}
+	return y.recent.do(ctx, y.MinInterval, id, func(ctx context.Context) (*Game, error) {
+		return y.fetchGame(ctx, id)
+	})
+}
+
+func (y *Yomiuri) fetchGame(ctx context.Context, id string) (*Game, error) {
 	src, err := y.get(ctx, PayloadURL(id))
 	if err != nil {
 		return nil, err

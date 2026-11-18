@@ -50,6 +50,11 @@ type Fuwalete struct {
 	Client *http.Client
 	// BaseURL は取得元(テストで差し替える)。既定は FuwaleteBaseURL。
 	BaseURL string
+	// MinInterval は同じ棋譜を取りに行く最短の間隔(内側なら前の結果を返す。`MinFetchInterval`)。
+	// 0 なら毎回取りに行く。`NewXxx` は MinFetchInterval を入れる(構造体を直接作ると 0)。
+	MinInterval time.Duration
+
+	recent recent[*FuwaleteGame]
 }
 
 // FuwaleteBaseURL は「ふわりと将棋」の基点。
@@ -57,7 +62,7 @@ const FuwaleteBaseURL = "https://fuwalete.com"
 
 // NewFuwalete は既定の HTTP クライアントを持つ Fuwalete を返す。
 func NewFuwalete() *Fuwalete {
-	return &Fuwalete{Client: &http.Client{Timeout: 30 * time.Second}}
+	return &Fuwalete{Client: &http.Client{Timeout: 30 * time.Second}, MinInterval: MinFetchInterval}
 }
 
 func (s *Fuwalete) client() *http.Client {
@@ -168,12 +173,20 @@ type wpPost struct {
 	} `json:"content"`
 }
 
-// FetchGame は記事の slug から 1 局分を取得する。
+// FetchGame は記事の slug から 1 局分を取得する(記事と、対局中なら共有の枠の 2 回)。
+//
+// ⚠️ 返す値は `MinInterval` の内側の呼び出しで共有される。**書き換えないこと。**
 func (s *Fuwalete) FetchGame(ctx context.Context, slug string) (*FuwaleteGame, error) {
 	slug = strings.Trim(strings.TrimSpace(slug), "/")
 	if slug == "" {
 		return nil, fmt.Errorf("scrape: empty fuwalete slug")
 	}
+	return s.recent.do(ctx, s.MinInterval, slug, func(ctx context.Context) (*FuwaleteGame, error) {
+		return s.fetchGame(ctx, slug)
+	})
+}
+
+func (s *Fuwalete) fetchGame(ctx context.Context, slug string) (*FuwaleteGame, error) {
 	post, err := s.fetchPost(ctx, "posts", slug)
 	if err != nil {
 		return nil, err

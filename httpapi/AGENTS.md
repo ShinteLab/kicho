@@ -16,8 +16,10 @@
 | `GET /fuwalete/kifu/{id}` | ふわりと将棋から直接取得して KIF を返す（記事の slug。保存はしない） |
 | `GET /` | 使い方の案内 |
 
-- ライブ経路（`/ryuoh` `/shogilive` `/shogidb2` `/fuwalete`）は**リクエストのたびに取りに行く**。
-  `Cache-Control: no-store` を付ける（対局中は棋譜が伸びるため）
+- ライブ経路（`/ryuoh` `/shogilive` `/shogidb2` `/fuwalete`）は**リクエストのたびに取りに行く**が、
+  **同じ棋譜は 10 秒以内なら前の結果を返す**（`scrape.MinFetchInterval`。外部ツールが短い間隔で
+  読み続けてもサイトへのアクセスが増えないように）。`Cache-Control: no-store` は付けたまま
+  （対局中は棋譜が伸びるため。間隔を持つのは scrape で、ここではない）
 - `GET /kifu` は**件数を切らない**（外部ツールが全件を期待する）。上限を掛けるのは
   アプリの一覧（`kicho.Library.Search`）だけ
 - `/shogilive/kifu/` だけ `{id...}` のワイルドカード。連盟の棋譜 ID は中継のパス
