@@ -114,7 +114,7 @@ func FuwaleteSlug(raw string) (string, error) {
 // 盤に当てられるかどうかは別の話で、使う側がエラーの印として見る(`kicho.inspectBody`)。
 type FuwaleteGame struct {
 	SourceID  string // 記事の slug("ito-365549")
-	Event     string // 記事の題から("王将戦 挑決L")
+	Event     string // 記事の題から("王将戦 挑決L")。指し直し局なら "（指し直し）" を付ける
 	Black     string
 	White     string
 	StartedAt time.Time
@@ -273,6 +273,8 @@ type fuwaleteText struct {
 	black    string           // 見出しの先手("永瀬九段")
 	white    string
 	limit    time.Duration
+	// rematch は指し直しの区切りがあったか(読んだのは指し直し局)。
+	rematch bool
 }
 
 // readFuwaleteText は本文(HTML)を行にして、指し手・解説・終局・先後・持ち時間を拾う。
@@ -290,6 +292,7 @@ func readFuwaleteText(contents ...string) (*fuwaleteText, error) {
 		for _, line := range htmlLines(c) {
 			trimmed := strings.Trim(line, " \t　")
 			if isFuwaleteRematchLine(trimmed) {
+				t.rematch = true
 				break // ここから下は前の局
 			}
 			if m := fuwaleteMoveLine.FindStringSubmatch(trimmed); m != nil {
@@ -333,6 +336,9 @@ func readFuwaleteText(contents ...string) (*fuwaleteText, error) {
 	}
 	return t, nil
 }
+
+// fuwaleteRematchSuffix は指し直し局の棋戦名に付ける印("順位戦 A級（指し直し）")。
+const fuwaleteRematchSuffix = "（指し直し）"
 
 // isFuwaleteRematchLine は指し直しの区切り(`ーー 指し直し 開始 ーー`)の行かどうかを返す。
 // 見出しの `指し直し 棋譜速報 自動更新　終了` は区切りではない(`ーー` が無い)。
@@ -431,8 +437,13 @@ func parseFuwalete(post *wpPost, live string) (*FuwaleteGame, error) {
 		return nil, err
 	}
 
+	event := title.event
+	if t.rematch {
+		// 指し直し局を表す欄が無いので棋戦名に付ける(検索でも当たる)。
+		event += fuwaleteRematchSuffix
+	}
 	g := &FuwaleteGame{
-		Event:     title.event,
+		Event:     event,
 		Black:     title.fullName(t.black),
 		White:     title.fullName(t.white),
 		StartedAt: title.startedAt,

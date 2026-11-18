@@ -281,6 +281,13 @@ func TestFuwaleteRematch(t *testing.T) {
 	if g.TimeLimit != 6*time.Hour {
 		t.Errorf("TimeLimit = %v", g.TimeLimit)
 	}
+	// 指し直し局であることは棋戦名に付ける(KI2 の「棋戦：」にも出る)。
+	if g.Event != "順位戦 A級（指し直し）" {
+		t.Errorf("Event = %q", g.Event)
+	}
+	if !strings.Contains(g.KI2(), "棋戦：順位戦 A級（指し直し）") {
+		t.Errorf("KI2 の棋戦に指し直しが無い:\n%s", g.KI2()[:200])
+	}
 	// 「▲65角26歩」の 26歩 は空白の抜けた付記。
 	if got := g.Moves[86].Text; got != "▲６五角" {
 		t.Errorf("87 手目 = %q, want ▲６五角", got)
