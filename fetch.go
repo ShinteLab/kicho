@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/ShinteLab/core/kifu"
 
@@ -30,14 +31,26 @@ type Fetcher struct {
 }
 
 // NewFetcher は取得だけを行う Fetcher を作る（DB は要らない）。
-func NewFetcher() *Fetcher {
-	return &Fetcher{
+//
+// opts で同じ棋譜を取りに行く間隔を変えられる（`WithMinFetchInterval`。既定 10 秒）。
+func NewFetcher(opts ...Option) *Fetcher {
+	o := applyOptions(opts)
+	f := &Fetcher{
 		yomiuri:   scrape.NewYomiuri(),
 		shogilive: scrape.NewShogiLive(),
 		shogidb2:  scrape.NewShogiDB2(),
 		fuwalete:  scrape.NewFuwalete(),
 	}
+	// ⚠️ 取得元を足したらここにも足すこと（足し忘れるとその取得元だけ既定の間隔のまま）。
+	f.yomiuri.MinInterval = o.minFetchInterval
+	f.shogilive.MinInterval = o.minFetchInterval
+	f.shogidb2.MinInterval = o.minFetchInterval
+	f.fuwalete.MinInterval = o.minFetchInterval
+	return f
 }
+
+// MinFetchInterval は同じ棋譜を中継サイトへ取りに行く最短の間隔（0 なら毎回取りに行く）。
+func (f *Fetcher) MinFetchInterval() time.Duration { return f.fuwalete.MinInterval }
 
 // Fetch は棋譜を取得する（**保存はしない**）。
 //

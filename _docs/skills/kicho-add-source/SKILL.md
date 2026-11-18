@@ -28,7 +28,8 @@ description: kicho にライブ取得元（棋譜中継サイト）を足す手�
 |---|---|
 | `scrape/<name>.go` | 取得本体。`FetchGame`（メタ付き）と `FetchKifu`（KIF 本文だけ。ライブ経路用）、`IsXxxURL`、ID の抽出。テストは httptest で（実サイトに繋がない） |
 | `store/store.go` | `Source*` 定数を足す |
-| `fetch.go` | `Fetcher` にフィールド、`NewFetcher`、`Fetch` の振り分け、`Refresh` の分岐、`fetchXxx` |
+| `fetch.go` | `Fetcher` にフィールド、`NewFetcher`（**取得の間隔 `MinInterval` も入れる**）、`Fetch` の振り分け、`Refresh` の分岐、`fetchXxx` |
+| `options_test.go` | `intervals` に足す（間隔の設定が効いているかを見る） |
 | `game.go` | `fromXxx`（`Fetched` への変換。`SourceURL` もここで） |
 | `kicho.go` | `Library.resolveSource`（保存・追跡で `source_url` を決め直す）と、`Open` で `httpapi` に取得元を渡す |
 | `httpapi/server.go` | ライブ経路のルートとパス組み立て（`XxxKifuPath`）。**到達テスト**（`TestPathBuildersReachTheRoutes`）も足す |

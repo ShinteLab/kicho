@@ -57,6 +57,10 @@ HTML かどうかは Content-Type ではなく中身で判定する（KIF は `<
 - ⚠️ **返す値は間隔の内側の呼び出しで共有される。書き換えないこと**
 - 間隔は構造体の `MinInterval`。`NewXxx` が 10 秒を入れ、**構造体を直接作ると 0（毎回取りに行く）**。
   既存のテストが取り直しを確かめられるのはこのため
+- 使う側が秒数を変える口は `kicho.WithMinFetchInterval`（`kicho.Open` / `kicho.NewFetcher` の Option。
+  0 以下で毎回取りに行く）。`NewFetcher` が全部の取得元の `MinInterval` に入れる。
+  ⚠️ **取得元を足したら `NewFetcher` にも足すこと**（足し忘れるとその取得元だけ設定が効かない。
+  `options_test.go` の `intervals` にも足すと見つかる）
 - 持つのは構造体ごと（`kicho.Fetcher` ごと）。別のプロセスや別の `Fetcher`（ikkyoku）とは共有しない
 
 ### 指し手が無い棋譜（対局前）はエラーにしない

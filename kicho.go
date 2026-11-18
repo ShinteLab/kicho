@@ -30,7 +30,9 @@ type Library struct {
 }
 
 // Open は棋譜 DB を開いて Library を作る。dbPath が空なら既定の保存先を使う。
-func Open(dbPath string, logger *slog.Logger) (*Library, error) {
+//
+// opts は取得の設定（`WithMinFetchInterval` など）。HTTP のライブ経路も同じ設定で取りに行く。
+func Open(dbPath string, logger *slog.Logger, opts ...Option) (*Library, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -45,7 +47,7 @@ func Open(dbPath string, logger *slog.Logger) (*Library, error) {
 	if err != nil {
 		return nil, err
 	}
-	f := NewFetcher()
+	f := NewFetcher(opts...)
 	return &Library{
 		Fetcher: f,
 		store:   st,
