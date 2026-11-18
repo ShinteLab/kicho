@@ -23,6 +23,8 @@ import (
 //	fuwalete_post_rematch.json  … 豊島–広瀬戦の終局後(2026-11-19 に取得)。87 手で千日手、
 //	                              指し直し局が 114 手で投了。1 つの記事に 2 局が並ぶ。
 //	                              指し直し局の 87 手目が「▲65角26歩」(付記の前の空白が抜けている)
+//	fuwalete_post_mate.json     … 羽生–石井戦(順位戦 B2。2026-11-19 に取得)。117 手で投了。
+//	                              102 手目から評価値の欄が「▲勝23手」(詰みまでの手数)になる
 
 // fuwaleteServer は REST API の posts / pages を返すテスト用サーバを立てる。
 // pages は slug → 応答(JSON の配列)。
@@ -294,6 +296,30 @@ func TestFuwaleteRematch(t *testing.T) {
 	}
 	kif := toKIF(t, g)
 	if strings.Contains(kif, "盤に当てられない") || !strings.Contains(kif, "115 投了") {
+		t.Errorf("投了まで読めていない:\n%s", kif)
+	}
+}
+
+// 詰みが見つかると評価値の欄が「▲勝23手」になる。欄を指し手に読まない。
+func TestFuwaleteMateColumn(t *testing.T) {
+	s := fuwaleteServer(t, map[string]string{"habu-367608": readTestdata(t, "fuwalete_post_mate.json")}, nil)
+	g, err := s.FetchGame(context.Background(), "habu-367608")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.Moves) != 117 || g.EndMark != "投了" {
+		t.Fatalf("手数 = %d, EndMark = %q, want 117 / 投了", len(g.Moves), g.EndMark)
+	}
+	if g.Black != "石井健太郎" || g.White != "羽生善治" {
+		t.Errorf("先手 = %q, 後手 = %q", g.Black, g.White)
+	}
+	for i, want := range map[int]string{102: "△同　銀", 103: "▲４一馬", 117: "▲７四桂"} {
+		if got := g.Moves[i-1].Text; got != want {
+			t.Errorf("%d 手目 = %q, want %q", i, got, want)
+		}
+	}
+	kif := toKIF(t, g)
+	if strings.Contains(kif, "盤に当てられない") || !strings.Contains(kif, "118 投了") {
 		t.Errorf("投了まで読めていない:\n%s", kif)
 	}
 }
