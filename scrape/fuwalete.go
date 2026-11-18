@@ -279,12 +279,19 @@ type fuwaleteText struct {
 //
 // 同じ手数が 2 度出たら**先に出たほうを使う**(枠の最新の手を記事より先に読ませるため)。
 // ⚠️ 同じ手数で中身が違えばエラー(どちらが正しいか分からない)。
+//
+// 千日手などの指し直しがあると、1 つの記事に 2 局が並ぶ(上が指し直し局、
+// `ーー 指し直し 開始 ーー` の下が前の局。先後も入れ替わる)。**読むのは区切りより上だけ**
+// (`isFuwaleteRematchLine`)。下まで読むと、同じ手数に別の局の手が来てエラーになる。
 func readFuwaleteText(contents ...string) (*fuwaleteText, error) {
 	t := &fuwaleteText{moves: map[int]string{}, comments: map[int][]string{}}
 	for _, c := range contents {
 		last := 0 // 直前の行が指し手ならその手数(解説を付ける先)
 		for _, line := range htmlLines(c) {
 			trimmed := strings.Trim(line, " \t　")
+			if isFuwaleteRematchLine(trimmed) {
+				break // ここから下は前の局
+			}
 			if m := fuwaleteMoveLine.FindStringSubmatch(trimmed); m != nil {
 				num, _ := strconv.Atoi(m[1])
 				move := fuwaleteMoveText(m[2])
@@ -327,14 +334,45 @@ func readFuwaleteText(contents ...string) (*fuwaleteText, error) {
 	return t, nil
 }
 
+// isFuwaleteRematchLine は指し直しの区切り(`ーー 指し直し 開始 ーー`)の行かどうかを返す。
+// 見出しの `指し直し 棋譜速報 自動更新　終了` は区切りではない(`ーー` が無い)。
+func isFuwaleteRematchLine(trimmed string) bool {
+	return strings.Contains(trimmed, "ーー") && strings.Contains(trimmed, "指し直し")
+}
+
 // fuwaleteMoveText は指し手の行の手番記号から後ろ("▲同玉 9/1:10")から指し手だけを取る。
 // "▲同　玉" のように「同」の後に空白を入れて書かれても 1 手として読む。
+//
+// 付記が空白なしで続いていても(`▲65角26歩` は `▲65角 ai26歩` の書き損じ)指し手だけを取る
+// (`cutFuwaleteNote`)。
 func fuwaleteMoveText(s string) string {
 	f := strings.Fields(s)
+	move := f[0]
 	if len(f) >= 2 && strings.HasSuffix(f[0], "同") {
-		return f[0] + f[1]
+		move = f[0] + f[1]
 	}
-	return f[0]
+	return cutFuwaleteNote(move)
+}
+
+// cutFuwaleteNote は指し手("▲65角26歩")の移動先より後ろに数字か英字が来たら、そこから先を
+// 空白の抜けた付記(AI の推奨手・時間)として落とす。
+//
+// KI2 の 1 手は移動先(`65` か `同`)のあとに駒名と修飾(右・引・成・打 など)しか来ないので、
+// 数字と英字は指し手の一部になりえない。**直すのは行の区切り方であって指し手ではない。**
+// 残った指し手が誤記なら、そのままエラーの印になる。
+func cutFuwaleteNote(move string) string {
+	rs := []rune(move)
+	start := 3 // 手番記号 + 移動先 2 文字
+	if len(rs) > 1 && rs[1] == '同' {
+		start = 2
+	}
+	for i := start; i < len(rs); i++ {
+		r := rs[i]
+		if r >= '0' && r <= '9' || r >= '０' && r <= '９' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' {
+			return string(rs[:i])
+		}
+	}
+	return move
 }
 
 // htmlLines は本文の HTML を表示どおりの行に分ける(`<br>` と段落・見出しで改行)。
