@@ -118,6 +118,30 @@ func (f *Fetcher) fromShogiDB2(g *scrape.ShogiDB2Game) Fetched {
 	}
 }
 
+// fromFuwalete はふわりと将棋の棋譜を Fetched にする。
+//
+// 記事に手で書かれた指し手（移動元の無い KI2）から**kicho が組み立てた KIF が原本**。
+// 誤記で途中から読めないときは、そこまでの手と理由（KIF の先頭のコメント）が入る。
+func (f *Fetcher) fromFuwalete(g *scrape.FuwaleteGame) Fetched {
+	return Fetched{
+		Source:   store.SourceFuwalete,
+		SourceID: g.SourceID,
+		// 諸元: どこから取ったか。記事の URL。
+		SourceURL: f.fuwalete.PostURL(g.SourceID),
+		Event:     g.Event,
+		Handicap:  kifu.HirateHandicap,
+		Black:     g.Black,
+		White:     g.White,
+		StartedAt: g.StartedAt,
+		EndMark:   g.EndMark,
+		Moves:     len(g.Moves),
+
+		KIF:      g.KIF(),
+		Format:   string(format.KIF),
+		Encoding: EncodingUTF8,
+	}
+}
+
 // fromDocument は解析結果を Fetched にする。
 //
 // **KIF は解析結果を組み立て直したものではなく原本（body）をそのまま入れる。**
@@ -182,6 +206,7 @@ func countMoves(body string) int {
 //	shogilive … 中継ページ(HTML)。`Fetch` が棋譜 ID に解決して取り直せる
 //	yomiuri   … 棋譜ビューアの URL。`Fetch` が ID を取り出して取り直せる
 //	shogidb2  … 対局ページの URL。`Fetch` が ID を取り出して取り直せる
+//	fuwalete  … 記事の URL。`Fetch` が slug を取り出して取り直せる
 //	url       … 指定された .kif そのもの。取り直せる
 //	paste     … ⚠️ **取り直せない。** 取得元が無い(空のまま)
 //

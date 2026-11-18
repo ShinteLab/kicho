@@ -13,9 +13,10 @@
 | `GET /ryuoh/kifu/{id}` | 読売から直接取得して KIF を返す（**Node 版との互換**。保存はしない） |
 | `GET /shogilive/kifu/{id...}` | 連盟の中継から直接取得して KIF を返す（保存はしない） |
 | `GET /shogidb2/kifu/{id}` | 将棋DB2 から直接取得して KIF を返す（保存はしない） |
+| `GET /fuwalete/kifu/{id}` | ふわりと将棋から直接取得して KIF を返す（記事の slug。保存はしない） |
 | `GET /` | 使い方の案内 |
 
-- ライブ経路（`/ryuoh` `/shogilive` `/shogidb2`）は**リクエストのたびに取りに行く**。
+- ライブ経路（`/ryuoh` `/shogilive` `/shogidb2` `/fuwalete`）は**リクエストのたびに取りに行く**。
   `Cache-Control: no-store` を付ける（対局中は棋譜が伸びるため）
 - `GET /kifu` は**件数を切らない**（外部ツールが全件を期待する）。上限を掛けるのは
   アプリの一覧（`kicho.Library.Search`）だけ

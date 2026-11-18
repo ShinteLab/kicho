@@ -80,6 +80,7 @@ type Server struct {
 	fetcher   Fetcher
 	shogilive LiveFetcher
 	shogidb2  LiveFetcher
+	fuwalete  LiveFetcher
 	logger    *slog.Logger
 
 	mu   sync.Mutex
@@ -99,6 +100,13 @@ func New(st *store.Store, f Fetcher, live LiveFetcher, logger *slog.Logger) *Ser
 // Start より前に呼ぶこと。
 func (s *Server) WithShogiDB2(f LiveFetcher) *Server {
 	s.shogidb2 = f
+	return s
+}
+
+// WithFuwalete はふわりと将棋の取得元を付ける(付けなければ /fuwalete/kifu/ は 501)。
+// Start より前に呼ぶこと。
+func (s *Server) WithFuwalete(f LiveFetcher) *Server {
+	s.fuwalete = f
 	return s
 }
 
@@ -193,6 +201,11 @@ func ShogiDB2KifuPath(sourceID string) string {
 	return "/shogidb2/kifu/" + url.PathEscape(sourceID)
 }
 
+// FuwaleteKifuPath はふわりと将棋から直接取得するパスを返す(記事の slug)。
+func FuwaleteKifuPath(sourceID string) string {
+	return "/fuwalete/kifu/" + url.PathEscape(sourceID)
+}
+
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 
@@ -209,6 +222,9 @@ func (s *Server) routes() http.Handler {
 
 	// 将棋DB2 から直取得。サイトは KIF を配っていないので kicho が組み立てたものを返す。
 	mux.HandleFunc("GET /shogidb2/kifu/{id}", s.handleLiveKifu("shogidb2", func() LiveFetcher { return s.shogidb2 }))
+
+	// ふわりと将棋から直取得。記事の KI2 から kicho が組み立てたものを返す。
+	mux.HandleFunc("GET /fuwalete/kifu/{id}", s.handleLiveKifu("fuwalete", func() LiveFetcher { return s.fuwalete }))
 
 	mux.HandleFunc("GET /", s.handleIndex)
 	return mux
@@ -326,7 +342,7 @@ func (s *Server) handleRyuohKifu(w http.ResponseWriter, r *http.Request) {
 	writeKIF(w, "", g.KIF())
 }
 
-// GET /shogilive/kifu/{id...} ・ GET /shogidb2/kifu/{id} — 取得元から直接取得して
+// GET /shogilive/kifu/{id...} ・ GET /shogidb2/kifu/{id} ・ GET /fuwalete/kifu/{id} — 取得元から直接取得して
 // KIF で返す(保存はしない)。
 //
 // 連盟は Shift_JIS で配信しているので、ここで **UTF-8 に寄せて**返す。
@@ -403,6 +419,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		"GET /ryuoh/kifu/{id}     読売(竜王戦)から直接取得 (KIF)",
 		"GET /shogilive/kifu/{id} 日本将棋連盟の中継から直接取得 (KIF)",
 		"GET /shogidb2/kifu/{id}  将棋DB2 から直接取得 (KIF)",
+		"GET /fuwalete/kifu/{id}  ふわりと将棋から直接取得 (KIF)",
 		"",
 	}, "\n"))
 }

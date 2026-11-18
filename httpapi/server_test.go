@@ -473,6 +473,31 @@ func TestShogiDB2PathReachesTheRoute(t *testing.T) {
 	}
 }
 
+// ふわりと将棋の経路とパス組み立て。付けていなければ 501。
+func TestFuwaletePathReachesTheRoute(t *testing.T) {
+	const id = "ito-365549"
+	p := FuwaleteKifuPath(id)
+
+	_, _, bare := newTestServerWithLive(t, &fakeFetcher{game: sampleFetchedGame()}, nil)
+	if resp, _ := get(t, bare+p); resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("取得元なしで GET %s = %d, want 501", p, resp.StatusCode)
+	}
+
+	fw := &fakeLiveFetcher{kif: sampleLiveKIF}
+	_, _, base := newTestServerWithLive(t, &fakeFetcher{game: sampleFetchedGame()}, nil,
+		func(s *Server) { s.WithFuwalete(fw) })
+	resp, body := get(t, base+p)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s = %d, want 200", p, resp.StatusCode)
+	}
+	if !strings.Contains(body, "棋戦：中継テスト棋戦") {
+		t.Errorf("body = %q", body)
+	}
+	if len(fw.ids) != 1 || fw.ids[0] != id {
+		t.Errorf("fetched ids = %q, want [%q]", fw.ids, id)
+	}
+}
+
 // 対局中の棋譜なのでリクエストのたびに取りに行くこと(キャッシュしない)。
 func TestShogiLiveKifuIsNotCached(t *testing.T) {
 	live := &fakeLiveFetcher{kif: sampleLiveKIF}

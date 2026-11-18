@@ -41,6 +41,7 @@ const SOURCE_LABELS: Record<string, string> = {
   yomiuri: "読売（竜王戦）",
   shogilive: "将棋連盟 中継",
   shogidb2: "将棋DB2",
+  fuwalete: "ふわりと将棋",
 };
 
 /** カードの識別子。取得元ごとに棋譜 ID の形が違うので取得元も含める。 */
@@ -487,6 +488,9 @@ function FetchTab({
         </li>
         <li>
           <strong>将棋DB2</strong>: <code>shogidb2.com/games/…</code> の対局ページ URL
+        </li>
+        <li>
+          <strong>ふわりと将棋</strong>: <code>fuwalete.com/…</code> の棋譜速報の記事 URL
         </li>
       </ul>
 

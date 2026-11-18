@@ -13,6 +13,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	golang.org/x/image v0.44.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	modernc.org/libc v1.74.1 // indirect
@@ -22,7 +23,7 @@ require (
 )
 
 require (
-	github.com/ShinteLab/core v0.3.0 // indirect
+	github.com/ShinteLab/core v0.4.0 // indirect
 	github.com/ShinteLab/kicho v0.0.0-00010101000000-000000000000
 	github.com/adrg/xdg v0.5.3 // indirect
 	github.com/coder/websocket v1.8.14 // indirect

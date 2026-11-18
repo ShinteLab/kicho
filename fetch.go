@@ -26,6 +26,7 @@ type Fetcher struct {
 	yomiuri   *scrape.Yomiuri
 	shogilive *scrape.ShogiLive
 	shogidb2  *scrape.ShogiDB2
+	fuwalete  *scrape.Fuwalete
 }
 
 // NewFetcher は取得だけを行う Fetcher を作る（DB は要らない）。
@@ -34,6 +35,7 @@ func NewFetcher() *Fetcher {
 		yomiuri:   scrape.NewYomiuri(),
 		shogilive: scrape.NewShogiLive(),
 		shogidb2:  scrape.NewShogiDB2(),
+		fuwalete:  scrape.NewFuwalete(),
 	}
 }
 
@@ -44,6 +46,7 @@ func NewFetcher() *Fetcher {
 //
 //   - live.shogi.or.jp の URL  → 日本将棋連盟の棋譜中継
 //   - shogidb2.com の URL      → 将棋DB2
+//   - fuwalete.com の URL      → ふわりと将棋の棋譜速報
 //   - yomiuri.co.jp の URL     → 読売（竜王戦）
 //   - それ以外の http(s) URL   → **その中身を .kif として読む**（HTML なら辿る）
 //   - URL でない文字列         → 読売の棋譜 ID
@@ -75,6 +78,14 @@ func (f *Fetcher) Fetch(ctx context.Context, input string) (Fetched, error) {
 			return Fetched{}, err
 		}
 		return f.fetchShogiDB2(ctx, id)
+	}
+	// ⚠️ ふわりと将棋も記事(HTML)なので、汎用の URL より先に振り分ける。
+	if scrape.IsFuwaleteURL(in) {
+		slug, err := scrape.FuwaleteSlug(in)
+		if err != nil {
+			return Fetched{}, err
+		}
+		return f.fetchFuwalete(ctx, slug)
 	}
 	// 中継として知っているサイト以外の URL は、中身をそのまま棋譜として読む。
 	if isHTTPURL(in) && !scrape.IsYomiuriURL(in) {
@@ -109,6 +120,8 @@ func (f *Fetcher) Refresh(ctx context.Context, source, sourceID string) (Fetched
 		return f.fetchShogiLive(ctx, sourceID)
 	case store.SourceShogiDB2:
 		return f.fetchShogiDB2(ctx, sourceID)
+	case store.SourceFuwalete:
+		return f.fetchFuwalete(ctx, sourceID)
 	case store.SourceYomiuri, "":
 		return f.fetchRyuoh(ctx, sourceID)
 	case store.SourceURL:
@@ -211,6 +224,15 @@ func (f *Fetcher) fetchShogiDB2(ctx context.Context, id string) (Fetched, error)
 		return Fetched{}, err
 	}
 	return f.fromShogiDB2(g), nil
+}
+
+// fetchFuwalete はふわりと将棋の記事から KIF を組み立てる（保存はしない）。
+func (f *Fetcher) fetchFuwalete(ctx context.Context, slug string) (Fetched, error) {
+	g, err := f.fuwalete.FetchGame(ctx, slug)
+	if err != nil {
+		return Fetched{}, err
+	}
+	return f.fromFuwalete(g), nil
 }
 
 // resolveRyuohInput は入力（対局ページ URL / 棋譜ビューア URL / 棋譜 ID）を
