@@ -97,7 +97,75 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// v5 → v6: エラーの印と派生棋譜（親子）の列。**どの版から来ても通す**（足りない列だけ
+	// 足し、body_digest が空の行だけ埋めるので、何度流しても同じ）。v0 からの移行は
+	// 最新の形で games を作り直すので列はあるが、body_digest は空のまま来る。
+	cols, err = columnSet(db, "games")
+	if err != nil {
+		return err
+	}
+	if err := migrateV5ToV6(db, cols); err != nil {
+		return err
+	}
+
 	return setVersion(db, schemaVersion)
+}
+
+// migrateV5ToV6 は games にエラーの印と派生棋譜の列を足し、既存の本文から
+// body_digest を埋める。1 トランザクションで行う。
+//
+// ⚠️ **トランザクションの中で db.Query を使わないこと。** 接続は 1 本
+// （SetMaxOpenConns(1)）なので、tx を持ったまま db に問い合わせると止まる。
+// 列の有無は呼び出し側が tx の外で調べて渡す。
+func migrateV5ToV6(db *sql.DB, cols map[string]bool) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, c := range v6Columns {
+		if cols[c.name] {
+			continue
+		}
+		if _, err := tx.Exec(c.ddl); err != nil {
+			return fmt.Errorf("migrate to v6: add column %s: %w", c.name, err)
+		}
+	}
+	if _, err := tx.Exec(v6IndexSQL); err != nil {
+		return fmt.Errorf("migrate to v6: create index: %w", err)
+	}
+
+	// 先に全部読んでから書く（読みながら同じ表を更新しない）。
+	rows, err := tx.Query(`SELECT g.id, k.body FROM games g
+		JOIN game_kifu k ON k.game_id = g.id WHERE g.body_digest = ''`)
+	if err != nil {
+		return fmt.Errorf("migrate to v6: read bodies: %w", err)
+	}
+	type idDigest struct{ id, digest string }
+	var fill []idDigest
+	for rows.Next() {
+		var id, body string
+		if err := rows.Scan(&id, &body); err != nil {
+			rows.Close()
+			return fmt.Errorf("migrate to v6: read bodies: %w", err)
+		}
+		fill = append(fill, idDigest{id, bodyDigest(body)})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("migrate to v6: read bodies: %w", err)
+	}
+	for _, f := range fill {
+		if _, err := tx.Exec(`UPDATE games SET body_digest = ? WHERE id = ?`, f.digest, f.id); err != nil {
+			return fmt.Errorf("migrate to v6: fill digest: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration: %w", err)
+	}
+	return nil
 }
 
 // migrateV4ToV5 は games に人が書く欄を足し、FTS を作り直す。

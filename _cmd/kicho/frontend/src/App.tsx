@@ -42,6 +42,12 @@ const SOURCE_LABELS: Record<string, string> = {
   shogilive: "将棋連盟 中継",
   shogidb2: "将棋DB2",
   fuwalete: "ふわりと将棋",
+  derived: "派生",
+};
+
+/** 派生棋譜（子）の親との関係の表示名。 */
+const RELATION_LABELS: Record<string, string> = {
+  correction: "訂正",
 };
 
 /** カードの識別子。取得元ごとに棋譜 ID の形が違うので取得元も含める。 */
@@ -70,6 +76,14 @@ function cardFromWatch(w: WatchEntry): FetchCard {
     endMark: w.endMark,
     finished: w.finished,
     moves: w.moves,
+    // 仮の一覧はエラーも親子も持たない（本文が無いので）。「更新」で取り直すと埋まる。
+    errorMove: 0,
+    error: "",
+    parentId: "",
+    relation: "",
+    parentChanged: false,
+    parentMissing: false,
+    children: 0,
     kif: "",
     encoding: "",
   };
@@ -240,6 +254,35 @@ function Moves({ moves, finished, endMark }: { moves: number; finished: boolean;
           （終局）
         </span>
       )}
+    </>
+  );
+}
+
+/**
+ * 盤に当てられない手がある棋譜の印。理由はバルーンに出す。
+ *
+ * ⚠️ 値はライブラリが本文から決めたもの（errorMove / error）をそのまま使う。画面では判定しない。
+ */
+function ErrorBadge({ errorMove, error }: { errorMove: number; error: string }) {
+  if (!errorMove) return null;
+  return (
+    <span className="error-badge" title={error}>
+      ⚠ {errorMove}手目
+    </span>
+  );
+}
+
+/** 保存済み棋譜の親子（訂正などの派生棋譜）の印。子の側は関係と親の状態、親の側は子の数。 */
+function LineageTags({ g }: { g: GameSummary }) {
+  const isChild = g.parentId !== "" || g.relation !== "";
+  return (
+    <>
+      {isChild && (
+        <span className="source-tag">{RELATION_LABELS[g.relation] || g.relation || "派生"}</span>
+      )}
+      {isChild && g.parentChanged && <span className="source-tag warn-tag">親が更新</span>}
+      {isChild && g.parentMissing && <span className="source-tag warn-tag">親は削除済み</span>}
+      {g.children > 0 && <span className="source-tag">派生 {g.children}</span>}
     </>
   );
 }
@@ -664,6 +707,7 @@ function GamePreview({ game, showTitle = true }: { game: GameDetail; showTitle?:
         <dt>手数</dt>
         <dd>
           <Moves moves={game.moves} finished={game.finished} endMark={game.endMark} />
+          <ErrorBadge errorMove={game.errorMove} error={game.error} />
         </dd>
       </dl>
       <details>
@@ -837,6 +881,7 @@ function ImportTab({
           <h3>{saved.event || "(棋戦名なし)"}</h3>
           <p className="hint">
             手数 <Moves moves={saved.moves} finished={saved.finished} endMark={saved.endMark} />
+            <ErrorBadge errorMove={saved.errorMove} error={saved.error} />
           </p>
           <CopyURLButton
             label="棋譜 URL をコピー"
@@ -1020,11 +1065,15 @@ function LibraryTab({ revision }: { revision: number }) {
             {games.map((g) => (
               <tr key={g.id} className={selected?.id === g.id ? "selected" : ""}>
                 <td>{formatDate(g.startedAt)}</td>
-                <td>{g.event || "-"}</td>
+                <td>
+                  {g.event || "-"}
+                  <LineageTags g={g} />
+                </td>
                 <td>{g.black || "-"}</td>
                 <td>{g.white || "-"}</td>
                 <td className="num">
                   <Moves moves={g.moves} finished={g.finished} endMark={g.endMark} />
+                  <ErrorBadge errorMove={g.errorMove} error={g.error} />
                 </td>
                 <td className="actions">
                   <CopyURLButton

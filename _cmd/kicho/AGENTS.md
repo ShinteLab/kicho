@@ -44,6 +44,10 @@ go build -o bin/kicho.exe .            # または wails3 build / wails3 dev
 - ⚠️ **`context.Background()` をそのまま DB へ渡さないこと。** store は接続を 1 本に
   絞っているので、止まらないクエリが1つあると以後の操作が全部待たされる
   （`dbContext` / `netContext`）
+- ⚠️ **エラーの印（`errorMove` / `error`）と親子（`parentId` / `relation` / `parentChanged` /
+  `parentMissing` / `children`）はライブラリが決めた値をそのまま運ぶ。** アプリで本文を読んで
+  判定しないこと（取得元・形式ごとの判定はライブラリにしか無い）。画面は印（`ErrorBadge` /
+  `LineageTags`）を出すだけで、訂正の操作は持たない
 - `ServerService.SourceURLs` が取得元ごとのライブ経路（取得 URL）を出し分ける
 - **サーバ停止中でも URL は返す**（設定値から組み立てる。貼り付け先で使う頃に
   起動していればよいため）。LAN 公開時は localhost 版を先頭に、到達可能な LAN アドレス版も

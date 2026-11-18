@@ -353,6 +353,25 @@ button.danger {
   white-space: nowrap;
 }
 
+/* 盤に当てられない手がある棋譜の印（⚠ N手目）。 */
+.error-badge {
+  color: var(--error-text);
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
+  border-radius: 3px;
+  font-size: 11px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+
+/* 親子の印のうち、親の側に変化があったもの（親が更新・親は削除済み）。 */
+.source-tag.warn-tag {
+  color: var(--warn-text);
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+}
+
 .copy {
   display: inline-flex;
   align-items: center;

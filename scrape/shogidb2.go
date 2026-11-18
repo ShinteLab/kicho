@@ -47,6 +47,11 @@ type ShogiDB2 struct {
 	// BaseURL は取得元(テストで差し替える)。既定は ShogiDB2BaseURL。
 	// WebSocket の URL もここから作る(http → ws / https → wss)。
 	BaseURL string
+	// MinInterval は同じ棋譜を取りに行く最短の間隔(内側なら前の結果を返す。`MinFetchInterval`)。
+	// 0 なら毎回取りに行く。`NewXxx` は MinFetchInterval を入れる(構造体を直接作ると 0)。
+	MinInterval time.Duration
+
+	recent recent[*ShogiDB2Game]
 }
 
 // ShogiDB2BaseURL は将棋DB2 の基点。
@@ -58,7 +63,7 @@ const shogiDB2Vsn = "2.0.0"
 
 // NewShogiDB2 は既定の HTTP クライアントを持つ ShogiDB2 を返す。
 func NewShogiDB2() *ShogiDB2 {
-	return &ShogiDB2{Client: &http.Client{Timeout: 30 * time.Second}}
+	return &ShogiDB2{Client: &http.Client{Timeout: 30 * time.Second}, MinInterval: MinFetchInterval}
 }
 
 func (s *ShogiDB2) client() *http.Client {
@@ -150,11 +155,19 @@ func (g ShogiDB2Game) KIF() string { return g.Document().String() }
 // ページを取って LiveView に join し、「KIF形式」ボタンと同じイベントを送って
 // 返ってきた構造化データから組み立てる。**ctx の期限で必ず抜ける**
 // (期限が無ければ 30 秒で切る)。
+//
+// ⚠️ 返す値は `MinInterval` の内側の呼び出しで共有される。**書き換えないこと。**
 func (s *ShogiDB2) FetchGame(ctx context.Context, id string) (*ShogiDB2Game, error) {
 	id = strings.Trim(strings.TrimSpace(id), "/")
 	if id == "" {
 		return nil, fmt.Errorf("scrape: empty shogidb2 game id")
 	}
+	return s.recent.do(ctx, s.MinInterval, id, func(ctx context.Context) (*ShogiDB2Game, error) {
+		return s.fetchGame(ctx, id)
+	})
+}
+
+func (s *ShogiDB2) fetchGame(ctx context.Context, id string) (*ShogiDB2Game, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)

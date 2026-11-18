@@ -30,7 +30,7 @@ func (l *Library) Watches(ctx context.Context) ([]store.Watch, error) {
 //
 // ⚠️ **載せられるのは取り直せるものだけ。** 復元しても「更新」が必ず失敗する
 // カードを作らないための蓋で、判定は `Refresh` が受け付ける取得元と揃えてある。
-// **paste だけが載らない**（取得元が無い）。
+// **paste と derived が載らない**（取得元が無い。`refetchable`）。
 //
 // ⚠️ **url も載る。** あちらの sourceId は URL そのものなので
 // （`sourceIDForURL`）、そこへ取り直しに行ける。
@@ -45,7 +45,7 @@ func (l *Library) Watch(ctx context.Context, f Fetched) (store.Watch, error) {
 	if err != nil {
 		return store.Watch{}, err
 	}
-	if source == store.SourcePaste {
+	if !refetchable(source) {
 		return store.Watch{}, fmt.Errorf("%w: %s は取り直せないので追跡できません",
 			ErrUnsupportedSource, source)
 	}

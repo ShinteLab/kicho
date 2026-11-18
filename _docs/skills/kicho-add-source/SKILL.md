@@ -12,7 +12,8 @@ description: kicho にライブ取得元（棋譜中継サイト）を足す手�
 
 1. **原本はどれか。** サイトが `.kif` を配っているならそれが原本（連盟）。
    構造化データしか無いなら kicho が KIF を組み立て、それが原本になる（読売・将棋DB2）。
-   移動元の無い表記（KI2）しか無いなら `kifu.DecodeKI2` で盤から割り出す（ふわりと将棋）。
+   移動元の無い表記（KI2）しか無いなら、**写した KI2 を原本にする**（ふわりと将棋。
+   KIF は配るときに `format.KI2ToKIF` で変換。盤に当てられない手はエラーの印で、原本は切らない）。
    サイトが「KIF 形式」として出す文字列が作り物（消費時間を 0 で埋めている等）なら使わない
 2. **`source_id` は何か。** ID から取得先の URL を**組み立て直せる**こと
    （カードの「更新」とライブ経路が ID だけで取りに行く）。人が開ける URL（`source_url`）も
@@ -27,7 +28,8 @@ description: kicho にライブ取得元（棋譜中継サイト）を足す手�
 |---|---|
 | `scrape/<name>.go` | 取得本体。`FetchGame`（メタ付き）と `FetchKifu`（KIF 本文だけ。ライブ経路用）、`IsXxxURL`、ID の抽出。テストは httptest で（実サイトに繋がない） |
 | `store/store.go` | `Source*` 定数を足す |
-| `fetch.go` | `Fetcher` にフィールド、`NewFetcher`、`Fetch` の振り分け、`Refresh` の分岐、`fetchXxx` |
+| `fetch.go` | `Fetcher` にフィールド、`NewFetcher`（**取得の間隔 `MinInterval` も入れる**）、`Fetch` の振り分け、`Refresh` の分岐、`fetchXxx` |
+| `options_test.go` | `intervals` に足す（間隔の設定が効いているかを見る） |
 | `game.go` | `fromXxx`（`Fetched` への変換。`SourceURL` もここで） |
 | `kicho.go` | `Library.resolveSource`（保存・追跡で `source_url` を決め直す）と、`Open` で `httpapi` に取得元を渡す |
 | `httpapi/server.go` | ライブ経路のルートとパス組み立て（`XxxKifuPath`）。**到達テスト**（`TestPathBuildersReachTheRoutes`）も足す |

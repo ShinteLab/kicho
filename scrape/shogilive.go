@@ -24,6 +24,11 @@ type ShogiLive struct {
 	Client *http.Client
 	// BaseURL は取得元(テストで差し替える)。既定は ShogiLiveBaseURL。
 	BaseURL string
+	// MinInterval は同じ棋譜を取りに行く最短の間隔(内側なら前の結果を返す。`MinFetchInterval`)。
+	// 0 なら毎回取りに行く。`NewXxx` は MinFetchInterval を入れる(構造体を直接作ると 0)。
+	MinInterval time.Duration
+
+	recent recent[*LiveKifu]
 }
 
 // ShogiLiveBaseURL は棋譜中継の基点。
@@ -34,7 +39,7 @@ const ShogiLiveBaseURL = "http://live.shogi.or.jp"
 
 // NewShogiLive は既定の HTTP クライアントを持つ ShogiLive を返す。
 func NewShogiLive() *ShogiLive {
-	return &ShogiLive{Client: &http.Client{Timeout: 30 * time.Second}}
+	return &ShogiLive{Client: &http.Client{Timeout: 30 * time.Second}, MinInterval: MinFetchInterval}
 }
 
 func (s *ShogiLive) client() *http.Client {
@@ -138,12 +143,21 @@ func kifuIDFromPath(p string) (string, error) {
 
 // FetchGame は棋譜 ID から1局分を取得する。
 //
-// 対局中は .kif が伸びていくので、そのつど取りに行く前提(キャッシュしない)。
+// 対局中は .kif が伸びていくので、そのつど取りに行く前提。ただし同じ棋譜は
+// `MinInterval` の内側なら前の結果を返す。
+//
+// ⚠️ 返す値は `MinInterval` の内側の呼び出しで共有される。**書き換えないこと。**
 func (s *ShogiLive) FetchGame(ctx context.Context, id string) (*LiveKifu, error) {
 	id = strings.Trim(strings.TrimSpace(id), "/")
 	if id == "" {
 		return nil, fmt.Errorf("scrape: empty shogilive kifu id")
 	}
+	return s.recent.do(ctx, s.MinInterval, id, func(ctx context.Context) (*LiveKifu, error) {
+		return s.fetchGame(ctx, id)
+	})
+}
+
+func (s *ShogiLive) fetchGame(ctx context.Context, id string) (*LiveKifu, error) {
 	b, err := getBytes(ctx, s.client(), s.KifuURL(id))
 	if err != nil {
 		return nil, err

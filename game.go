@@ -1,6 +1,7 @@
 package kicho
 
 import (
+	"errors"
 	"strings"
 	"time"
 
@@ -39,6 +40,12 @@ type Fetched struct {
 	EndMark string
 	// Moves は手数。**0 は「対局前」であってエラーではない。**
 	Moves int
+	// ErrorMove は本文を盤に当てられない最初の手（1 始まり。0 = エラー無し）。
+	// Error はその理由。どちらも本文から計算する（`inspectBody`）。
+	// **エラーがあっても保存はできる**（原本をそのまま残す。訂正は kicho の役目ではない）。
+	// ⚠️ `Library.Save` はこの値を使わず本文から決め直す（UI を往復してくるため）。
+	ErrorMove int
+	Error     string
 
 	// KIF は**登録された形式の原本**。整形し直さない。
 	KIF string
@@ -78,7 +85,7 @@ func fromYomiuri(g *scrape.Game) Fetched {
 		KIF:      g.KIF(),
 		Format:   string(format.KIF),
 		Encoding: EncodingUTF8,
-	}
+	}.withBodyMarks()
 }
 
 // fromShogiLive は連盟の中継の .kif を Fetched にする。
@@ -115,13 +122,14 @@ func (f *Fetcher) fromShogiDB2(g *scrape.ShogiDB2Game) Fetched {
 		KIF:      g.KIF(),
 		Format:   string(format.KIF),
 		Encoding: EncodingUTF8,
-	}
+	}.withBodyMarks()
 }
 
 // fromFuwalete はふわりと将棋の棋譜を Fetched にする。
 //
-// 記事に手で書かれた指し手（移動元の無い KI2）から**kicho が組み立てた KIF が原本**。
-// 誤記で途中から読めないときは、そこまでの手と理由（KIF の先頭のコメント）が入る。
+// **原本は記事に手で書かれた指し手を写した KI2**（形式 `ki2`。移動元を割り出す前のもので
+// 推測が入らない）。⚠️ **誤記があっても全部の手が入る。** 盤に当てられない手は
+// ErrorMove / Error（`withBodyMarks`）で分かり、手数・終局はサイトに書かれたまま。
 func (f *Fetcher) fromFuwalete(g *scrape.FuwaleteGame) Fetched {
 	return Fetched{
 		Source:   store.SourceFuwalete,
@@ -136,10 +144,10 @@ func (f *Fetcher) fromFuwalete(g *scrape.FuwaleteGame) Fetched {
 		EndMark:   g.EndMark,
 		Moves:     len(g.Moves),
 
-		KIF:      g.KIF(),
-		Format:   string(format.KIF),
+		KIF:      g.KI2(),
+		Format:   string(format.KI2),
 		Encoding: EncodingUTF8,
-	}
+	}.withBodyMarks()
 }
 
 // fromDocument は解析結果を Fetched にする。
@@ -163,15 +171,16 @@ func fromDocument(doc kifu.Document, f format.Format, source, sourceURL, body, e
 		White:     doc.White,
 		StartedAt: doc.StartedAt,
 		EndMark:   doc.EndMark(),
-		Moves:     len(doc.Moves),
+		// 手数は本文から数える（KI2 は doc に盤に当てられたところまでしか入らないため）。
+		Moves: countMoves(body),
 
 		KIF:      body,
 		Format:   string(f),
 		Encoding: encoding,
-	}
+	}.withBodyMarks()
 }
 
-// bodyFormat は本文の形式を見分ける（CSA でなければ KIF）。
+// bodyFormat は本文の形式を見分ける（CSA → KI2 → それ以外は KIF）。
 //
 // ⚠️ **見分けは `core/kifu` に寄せる**（`parseKifu` と同じ判定）。受ける形式を増やしたら
 // ここと `parseKifu` に足すこと。
@@ -179,22 +188,68 @@ func bodyFormat(body string) format.Format {
 	if kifu.IsCSA(body) {
 		return format.CSA
 	}
+	if kifu.IsKI2(body) {
+		return format.KI2
+	}
 	return format.KIF
 }
 
-// countMoves は本文（KIF / CSA）の手数を数える。
+// withBodyMarks はエラーの印（ErrorMove / Error）を本文から付け直したものを返す。
+// 取得の結果（from*）はみなここを通す。手数は取得元の値のまま。
+func (f Fetched) withBodyMarks() Fetched {
+	_, f.ErrorMove, f.Error = inspectBody(f.KIF)
+	return f
+}
+
+// countMoves は本文（KIF / CSA）の手数を数える（`inspectBody` の手数）。
+func countMoves(body string) int {
+	moves, _, _ := inspectBody(body)
+	return moves
+}
+
+// inspectBody は本文の手数と、盤に当てられない最初の手（0 = エラー無し）と理由を返す。
 //
 // **行数を数えるのではなく core/kifu で解析する。** 連盟が配信する .kif は
 // `# --- Kifu for Windows ...` に始まり、指し手の間に `*` の観戦記コメントが
 // 大量に入る。行を数えるとそれらまで手数に入る。
 //
-// 形式は本文から見分ける（`parseKifu`。保存する形式の欄とは独立に、中身で数える）。
-func countMoves(body string) int {
-	doc, _, err := parseKifu(body)
-	if err != nil {
-		return 0
+// 形式は本文から見分ける（`bodyFormat`。保存する形式の欄とは独立に、中身で見る）。
+// 見つけられるエラーは形式によって違う:
+//
+//	KIF … 見つけない（`kifu.Parse` は移動元の座標をそのまま信じ、盤を見ない）
+//	CSA … 指し手が途中で読めない（`kifu.ErrCSAMoves`）。手数は読めたところまで
+//	KI2 … 盤に当てられない手（`kifu.KI2Document.KIF`。移動元を割り出すので必ず見つかる）。
+//	      ⚠️ **手数は原本に書かれた手の数**（盤に当てられたところまでではない）
+//
+// ⚠️ **形式を増やしたらここに足すこと**。
+func inspectBody(body string) (moves, errorMove int, errText string) {
+	switch bodyFormat(body) {
+	case format.KI2:
+		k, err := kifu.ParseKI2(body)
+		if err != nil {
+			return 0, 0, ""
+		}
+		_, errMove, err := k.KIF()
+		if err != nil {
+			return len(k.Moves), errMove, err.Error()
+		}
+		return len(k.Moves), 0, ""
+	case format.CSA:
+		doc, err := kifu.ParseCSA(body)
+		if errors.Is(err, kifu.ErrCSAMoves) {
+			return len(doc.Moves), len(doc.Moves) + 1, err.Error()
+		}
+		if err != nil {
+			return 0, 0, ""
+		}
+		return len(doc.Moves), 0, ""
+	default:
+		doc, err := kifu.Parse(body)
+		if err != nil {
+			return 0, 0, ""
+		}
+		return len(doc.Moves), 0, ""
 	}
-	return len(doc.Moves)
 }
 
 // RefetchableURL は「その取得元 URL をもう一度取りに行けば同じ棋譜が取れるか」
@@ -209,6 +264,7 @@ func countMoves(body string) int {
 //	fuwalete  … 記事の URL。`Fetch` が slug を取り出して取り直せる
 //	url       … 指定された .kif そのもの。取り直せる
 //	paste     … ⚠️ **取り直せない。** 取得元が無い(空のまま)
+//	derived   … ⚠️ **取り直せない。** 親から作った棋譜（訂正など）で取得元が無い
 //
 // ⚠️ **読売を「取り直せない」にしないこと。** 読売は .kif を置いていないが、
 // 判定は「その URL を .kif として読めるか」ではなく**「`Fetch` にその URL を
@@ -221,8 +277,14 @@ func countMoves(body string) int {
 // ここで空を返すと「中継を追いながら検討する」流れでは
 // **カードの更新 → 解析（根ごと入れ替え＝評価値が全部消える）しか手が無くなる。**
 func RefetchableURL(source, sourceURL string) string {
-	if source == store.SourcePaste {
+	if !refetchable(source) {
 		return ""
 	}
 	return sourceURL
+}
+
+// refetchable は取り直せる取得元かを返す。**取得元が無い paste と derived だけが取り直せない。**
+// ⚠️ `RefetchableURL` と `Library.Watch` はここで揃えている（片方だけ変えないこと）。
+func refetchable(source string) bool {
+	return source != store.SourcePaste && source != store.SourceDerived
 }

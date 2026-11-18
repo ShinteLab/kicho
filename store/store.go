@@ -8,7 +8,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -47,6 +49,16 @@ const (
 	SourceURL = "url"
 	// SourcePaste は KIF テキストを直接貼り付けたもの。
 	SourcePaste = "paste"
+	// SourceDerived は保存済みの棋譜（親）から作った棋譜（訂正など）。SourceID は
+	// 保存のたびに新しい UUID で、取り直せない。**保存は SaveDerived だけ**（Save は断る）。
+	SourceDerived = "derived"
+)
+
+// 派生棋譜の親との関係（Record.Relation）。
+const (
+	// RelationCorrection は親（エラーのある棋譜）を訂正した棋譜。
+	// **kicho は訂正しない。** 訂正した結果を受け取って親と繋ぐだけ。
+	RelationCorrection = "correction"
 )
 
 // Game は保存する棋譜1局分。KIF テキストは組み立て済みのものを受け取る。
@@ -66,6 +78,11 @@ type Game struct {
 	// Moves は手数。棋譜の書式を知っているのは呼び出し側なので、
 	// ここでは本文から数えずに受け取る(一覧表示で本文を読まずに済ませるため)。
 	Moves int
+	// ErrorMove は本文を盤に当てられない最初の手(1 始まり。0 = エラー無し)。
+	// Error はその理由。手数と同じく書式を知っている呼び出し側が本文から計算して渡す。
+	// **エラーがあっても保存は断らない**(原本をそのまま残すのが役目)。
+	ErrorMove int
+	Error     string
 
 	// Body は**登録された形式の原本**。整形し直さずそのまま持つ
 	// (整形すると変化・コメント・不成などの情報が落ちるため)。
@@ -96,6 +113,32 @@ type Record struct {
 	EventEdited string
 	// Note は備考。
 	Note string
+
+	// BodyDigest は本文の sha256(16 進)。Save / SaveDerived が本文から計算する。
+	BodyDigest string
+
+	// ここから下は**派生棋譜（訂正など）の親との繋がり**。書くのは SaveDerived だけで、
+	// Save は触らない(親を取り直して保存しても繋がりは消えない)。
+
+	// ParentID は親の ID(空 = 親なし)。親を消しても空にしない(ParentMissing で分かる)。
+	ParentID string
+	// Relation は親との関係(RelationCorrection など)。
+	Relation string
+	// ParentDigest は子を作った時点の親の BodyDigest。
+	ParentDigest string
+	// ParentChanged は子を作ったあとに親の本文が変わったか(親があり、親の BodyDigest が
+	// ParentDigest と違う)。読むたびに計算する。
+	ParentChanged bool
+	// ParentMissing は親が削除済みか(ParentID があるのに親が無い)。読むたびに計算する。
+	ParentMissing bool
+	// Children はこの棋譜を親に持つ棋譜の数。読むたびに計算する。
+	Children int
+}
+
+// bodyDigest は本文のダイジェスト(sha256 の 16 進)。
+func bodyDigest(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
 }
 
 // DisplayEvent は画面に出す対局名を返す(直した値があればそれ、無ければ取得した値)。
@@ -178,9 +221,19 @@ func fromEpoch(sec int64) time.Time {
 
 // Save は棋譜を保存する。同じ (Source, SourceID) が既にあれば内容を更新し、
 // 既存の ID と CreatedAt はそのまま維持する。
+//
+// エラーの印(ErrorMove / Error)と本文のダイジェストも書き直す。
+// ⚠️ **親子の列(parent_id / relation / parent_digest)には触らない。** 親を取り直して
+// 保存し直しても子との繋がりが残るように(人が書く欄と同じ扱い)。
+// 派生棋譜(SourceDerived)は SaveDerived で保存する(ここでは断る)。
+//
+// 返すのは保存したあとの棋譜(読み直したもの。子の件数なども入る)。
 func (s *Store) Save(ctx context.Context, g Game) (Record, error) {
 	if g.Source == "" || g.SourceID == "" {
 		return Record{}, fmt.Errorf("kicho: Source and SourceID are required")
+	}
+	if g.Source == SourceDerived {
+		return Record{}, fmt.Errorf("kicho: 派生棋譜は SaveDerived で保存してください")
 	}
 	if g.Body == "" {
 		return Record{}, fmt.Errorf("kicho: 棋譜本文が空です")
@@ -201,13 +254,13 @@ func (s *Store) Save(ctx context.Context, g Game) (Record, error) {
 	defer tx.Rollback()
 
 	// 既存を探す(あれば ID と CreatedAt を引き継ぐ)。
-	// 人が書く欄(event_edited / note)は読むだけ。返す Record に載せるためで、
-	// ⚠️ **下の upsert には入れない**(取り直して保存しても編集が消えないように)。
-	var id, eventEdited, note string
+	// ⚠️ 人が書く欄(event_edited / note)と親子の列は**下の upsert には入れない**
+	// (取り直して保存しても編集と親子の繋がりが消えないように)。
+	var id string
 	var createdAt int64
 	err = tx.QueryRowContext(ctx,
-		`SELECT id, created_at, event_edited, note FROM games WHERE source = ? AND source_id = ?`,
-		g.Source, g.SourceID).Scan(&id, &createdAt, &eventEdited, &note)
+		`SELECT id, created_at FROM games WHERE source = ? AND source_id = ?`,
+		g.Source, g.SourceID).Scan(&id, &createdAt)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		id = uuid.NewString()
@@ -219,8 +272,9 @@ func (s *Store) Save(ctx context.Context, g Game) (Record, error) {
 	_, err = tx.ExecContext(ctx, `
         INSERT INTO games (id, source, source_id, source_url, event, handicap, place,
                            black, white, started_at, end_mark, moves,
+                           error_move, error, body_digest,
                            created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(source, source_id) DO UPDATE SET
             source_url = excluded.source_url,
             event = excluded.event,
@@ -231,42 +285,158 @@ func (s *Store) Save(ctx context.Context, g Game) (Record, error) {
             started_at = excluded.started_at,
             end_mark = excluded.end_mark,
             moves = excluded.moves,
+            error_move = excluded.error_move,
+            error = excluded.error,
+            body_digest = excluded.body_digest,
             updated_at = excluded.updated_at`,
 		id, g.Source, g.SourceID, g.SourceURL, g.Event, g.Handicap, g.Place,
 		g.Black, g.White, toEpoch(g.StartedAt), g.EndMark, g.Moves,
+		g.ErrorMove, g.Error, bodyDigest(g.Body),
 		createdAt, toEpoch(now))
 	if err != nil {
 		return Record{}, fmt.Errorf("save game: %w", err)
 	}
 
-	_, err = tx.ExecContext(ctx, `
+	if err := saveKifu(ctx, tx, id, g); err != nil {
+		return Record{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Record{}, fmt.Errorf("commit: %w", err)
+	}
+	return s.Get(ctx, id)
+}
+
+// saveKifu は棋譜本文を書く(あれば置き換える)。
+func saveKifu(ctx context.Context, tx *sql.Tx, id string, g Game) error {
+	_, err := tx.ExecContext(ctx, `
         INSERT INTO game_kifu (game_id, format, encoding, body) VALUES (?, ?, ?, ?)
         ON CONFLICT(game_id) DO UPDATE SET
             format = excluded.format,
             encoding = excluded.encoding,
             body = excluded.body`, id, g.Format, g.Encoding, g.Body)
 	if err != nil {
-		return Record{}, fmt.Errorf("save kifu: %w", err)
+		return fmt.Errorf("save kifu: %w", err)
+	}
+	return nil
+}
+
+// SaveDerived は保存済みの棋譜(親)から作った棋譜(訂正など)を、親に繋いだ子として保存する。
+//
+// **毎回新しい棋譜になる**(source は SourceDerived、source_id は新しい UUID)。
+// g の Source / SourceID は使わない。relation は親との関係(RelationCorrection など)。
+// 親が無ければ ErrNotFound。
+//
+// 子には「作った時点の親の本文のダイジェスト」を残す(parent_digest)。あとで親が
+// 取り直されて本文が変わると Record.ParentChanged が立つ。
+func (s *Store) SaveDerived(ctx context.Context, parentID, relation string, g Game) (Record, error) {
+	if parentID == "" {
+		return Record{}, fmt.Errorf("kicho: 親の ID が空です")
+	}
+	if relation == "" {
+		return Record{}, fmt.Errorf("kicho: 親との関係が空です")
+	}
+	if g.Body == "" {
+		return Record{}, fmt.Errorf("kicho: 棋譜本文が空です")
+	}
+	if g.Format == "" {
+		g.Format = defaultFormat
+	}
+	if g.Encoding == "" {
+		g.Encoding = defaultEncoding
 	}
 
+	now := time.Now().UTC().Truncate(time.Second)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Record{}, fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	var parentDigest, parentBody string
+	err = tx.QueryRowContext(ctx, `SELECT g.body_digest, COALESCE(k.body, '')
+		FROM games g LEFT JOIN game_kifu k ON k.game_id = g.id WHERE g.id = ?`,
+		parentID).Scan(&parentDigest, &parentBody)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return Record{}, ErrNotFound
+	case err != nil:
+		return Record{}, fmt.Errorf("lookup parent: %w", err)
+	}
+	// 移行で埋まっていない親(本文が無かった行など)はここで埋める。比べる相手が
+	// 空のままだと、親が変わっていなくても ParentChanged が立ってしまう。
+	if parentDigest == "" {
+		parentDigest = bodyDigest(parentBody)
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE games SET body_digest = ? WHERE id = ?`, parentDigest, parentID); err != nil {
+			return Record{}, fmt.Errorf("fill parent digest: %w", err)
+		}
+	}
+
+	id := uuid.NewString()
+	g.Source = SourceDerived
+	g.SourceID = uuid.NewString()
+	_, err = tx.ExecContext(ctx, `
+        INSERT INTO games (id, source, source_id, source_url, event, handicap, place,
+                           black, white, started_at, end_mark, moves,
+                           error_move, error, body_digest,
+                           parent_id, relation, parent_digest,
+                           created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, g.Source, g.SourceID, g.SourceURL, g.Event, g.Handicap, g.Place,
+		g.Black, g.White, toEpoch(g.StartedAt), g.EndMark, g.Moves,
+		g.ErrorMove, g.Error, bodyDigest(g.Body),
+		parentID, relation, parentDigest,
+		toEpoch(now), toEpoch(now))
+	if err != nil {
+		return Record{}, fmt.Errorf("save derived game: %w", err)
+	}
+	if err := saveKifu(ctx, tx, id, g); err != nil {
+		return Record{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return Record{}, fmt.Errorf("commit: %w", err)
 	}
+	return s.Get(ctx, id)
+}
 
-	return Record{
-		Game:        g,
-		ID:          id,
-		CreatedAt:   fromEpoch(createdAt),
-		UpdatedAt:   now,
-		EventEdited: eventEdited,
-		Note:        note,
-	}, nil
+// Children は id の棋譜を親に持つ棋譜(派生棋譜)を新しい順に返す(本文なし)。
+// 親が無くても空を返す(エラーにしない)。
+func (s *Store) Children(ctx context.Context, id string) ([]Record, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+metaColumns+` FROM games g`+joinParent+
+			` WHERE g.parent_id = ? ORDER BY g.created_at DESC, g.rowid DESC`, id)
+	if err != nil {
+		return nil, fmt.Errorf("list children: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Record
+	for rows.Next() {
+		r, err := scanMeta(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan game: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // metaColumns は KIF 本文を含まないメタデータの列。
+//
+// 親子の判定(親の有無・親の本文のダイジェスト・子の件数)もここで読むので、
+// **FROM には必ず joinParent を付けること**(whereClause と Get などの読み口)。
 const metaColumns = `g.id, g.source, g.source_id, g.source_url, g.event, g.handicap, g.place,
                      g.black, g.white, g.started_at, g.end_mark, g.moves,
-                     g.created_at, g.updated_at, g.event_edited, g.note`
+                     g.created_at, g.updated_at, g.event_edited, g.note,
+                     g.error_move, g.error, g.body_digest,
+                     g.parent_id, g.relation, g.parent_digest,
+                     p.id IS NOT NULL, COALESCE(p.body_digest, ''),
+                     (SELECT COUNT(*) FROM games c WHERE c.parent_id = g.id)`
+
+// joinParent は親を引く(親が無い・消えた行は p が NULL になる)。
+const joinParent = ` LEFT JOIN games p ON g.parent_id <> '' AND p.id = g.parent_id`
 
 // withKifu はメタデータに棋譜本文(と形式・文字コード)を足した SELECT 句。
 const withKifu = metaColumns + `, COALESCE(k.body, ''),
@@ -283,40 +453,40 @@ const (
 
 type scanner interface{ Scan(...any) error }
 
-func scanMeta(sc scanner) (Record, error) {
-	var r Record
-	var startedAt, createdAt, updatedAt int64
-	err := sc.Scan(&r.ID, &r.Source, &r.SourceID, &r.SourceURL, &r.Event, &r.Handicap, &r.Place,
-		&r.Black, &r.White, &startedAt, &r.EndMark, &r.Moves,
-		&createdAt, &updatedAt, &r.EventEdited, &r.Note)
-	if err != nil {
-		return Record{}, err
-	}
-	r.StartedAt = fromEpoch(startedAt)
-	r.CreatedAt = fromEpoch(createdAt)
-	r.UpdatedAt = fromEpoch(updatedAt)
-	return r, nil
-}
+func scanMeta(sc scanner) (Record, error) { return scanRecord(sc, false) }
 
-func scanFull(sc scanner) (Record, error) {
+func scanFull(sc scanner) (Record, error) { return scanRecord(sc, true) }
+
+// scanRecord は metaColumns(withBody なら withKifu)の 1 行を読む。
+func scanRecord(sc scanner, withBody bool) (Record, error) {
 	var r Record
 	var startedAt, createdAt, updatedAt int64
-	err := sc.Scan(&r.ID, &r.Source, &r.SourceID, &r.SourceURL, &r.Event, &r.Handicap, &r.Place,
+	var parentExists bool
+	var parentBodyDigest string
+	dest := []any{&r.ID, &r.Source, &r.SourceID, &r.SourceURL, &r.Event, &r.Handicap, &r.Place,
 		&r.Black, &r.White, &startedAt, &r.EndMark, &r.Moves,
-		&createdAt, &updatedAt, &r.EventEdited, &r.Note, &r.Body, &r.Format, &r.Encoding)
-	if err != nil {
+		&createdAt, &updatedAt, &r.EventEdited, &r.Note,
+		&r.ErrorMove, &r.Error, &r.BodyDigest,
+		&r.ParentID, &r.Relation, &r.ParentDigest,
+		&parentExists, &parentBodyDigest, &r.Children}
+	if withBody {
+		dest = append(dest, &r.Body, &r.Format, &r.Encoding)
+	}
+	if err := sc.Scan(dest...); err != nil {
 		return Record{}, err
 	}
 	r.StartedAt = fromEpoch(startedAt)
 	r.CreatedAt = fromEpoch(createdAt)
 	r.UpdatedAt = fromEpoch(updatedAt)
+	r.ParentMissing = r.ParentID != "" && !parentExists
+	r.ParentChanged = parentExists && parentBodyDigest != r.ParentDigest
 	return r, nil
 }
 
 // Get は kicho 自前の ID で棋譜を取り出す(KIF 本文つき)。無ければ ErrNotFound。
 func (s *Store) Get(ctx context.Context, id string) (Record, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT `+withKifu+` FROM games g`+joinKifu+` WHERE g.id = ?`, id)
+		`SELECT `+withKifu+` FROM games g`+joinParent+joinKifu+` WHERE g.id = ?`, id)
 	r, err := scanFull(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Record{}, ErrNotFound
@@ -330,7 +500,7 @@ func (s *Store) Get(ctx context.Context, id string) (Record, error) {
 // FindBySource は取得元と取得元 ID で棋譜を探す。無ければ ErrNotFound。
 func (s *Store) FindBySource(ctx context.Context, source, sourceID string) (Record, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT `+withKifu+` FROM games g`+joinKifu+
+		`SELECT `+withKifu+` FROM games g`+joinParent+joinKifu+
 			` WHERE g.source = ? AND g.source_id = ?`, source, sourceID)
 	r, err := scanFull(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -348,7 +518,7 @@ const orderNewestFirst = ` ORDER BY g.started_at DESC, g.created_at DESC`
 // 一覧表示だけなら ListSummary / Search を使う。
 func (s *Store) List(ctx context.Context) ([]Record, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+withKifu+` FROM games g`+joinKifu+orderNewestFirst)
+		`SELECT `+withKifu+` FROM games g`+joinParent+joinKifu+orderNewestFirst)
 	if err != nil {
 		return nil, fmt.Errorf("list games: %w", err)
 	}
@@ -371,6 +541,9 @@ func (s *Store) ListSummary(ctx context.Context) ([]Record, error) {
 }
 
 // Delete は棋譜を削除する。無ければ ErrNotFound。
+//
+// ⚠️ **子(派生棋譜)は消さず、繋がり(parent_id)も空にしない。** 訂正は人の手間が
+// かかった成果なので親と一緒に消えては困る。子の側では Record.ParentMissing が立つ。
 func (s *Store) Delete(ctx context.Context, id string) error {
 	// game_kifu は ON DELETE CASCADE で消える(Open で foreign_keys を ON にしている)。
 	res, err := s.db.ExecContext(ctx, `DELETE FROM games WHERE id = ?`, id)
@@ -460,7 +633,7 @@ func whereClause(q Query) (sql string, args []any) {
 		sb    strings.Builder
 		where []string
 	)
-	sb.WriteString(` FROM games g`)
+	sb.WriteString(` FROM games g` + joinParent)
 
 	text := strings.TrimSpace(q.Text)
 	if text != "" {

@@ -328,7 +328,8 @@ func joinFormats(fs []format.Format) string {
 
 // GET /ryuoh/kifu/{id} — 読売から直接取得して KIF で返す(保存はしない)。
 //
-// リクエストのたびにサイトへ取りに行く(キャッシュしない)。対局中の棋譜は
+// リクエストのたびにサイトへ取りに行く(ここでは持たない)。ただし同じ棋譜は
+// 取得元が 10 秒以内なら前の結果を返す(`scrape.MinFetchInterval`)。対局中の棋譜は
 // 随時更新されるため、外部ツール側やプロキシにもキャッシュさせない。
 func (s *Server) handleRyuohKifu(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -346,7 +347,7 @@ func (s *Server) handleRyuohKifu(w http.ResponseWriter, r *http.Request) {
 // KIF で返す(保存はしない)。
 //
 // 連盟は Shift_JIS で配信しているので、ここで **UTF-8 に寄せて**返す。
-// 読売と同じくリクエストのたびに取りに行く(キャッシュしない)。
+// 読売と同じくリクエストのたびに取りに行く(同じ棋譜を 10 秒以内に読まれたら、取得元が前の結果を返す)。
 func (s *Server) handleLiveKifu(name string, fetcher func() LiveFetcher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
@@ -382,15 +383,25 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		White     string `json:"white"`
 		StartedAt string `json:"startedAt,omitempty"`
 		URL       string `json:"url"`
+		// エラーの印（盤に当てられない最初の手と理由）。無ければ出さない。
+		ErrorMove int    `json:"errorMove,omitempty"`
+		Error     string `json:"error,omitempty"`
+		// 派生棋譜（訂正など）の親と関係。親が無ければ出さない。
+		ParentID string `json:"parentId,omitempty"`
+		Relation string `json:"relation,omitempty"`
 	}
 	out := make([]item, 0, len(list))
 	for _, rec := range list {
 		it := item{
-			ID:    rec.ID,
-			Event: rec.Event,
-			Black: rec.Black,
-			White: rec.White,
-			URL:   KifuPath(rec.ID),
+			ID:        rec.ID,
+			Event:     rec.Event,
+			Black:     rec.Black,
+			White:     rec.White,
+			URL:       KifuPath(rec.ID),
+			ErrorMove: rec.ErrorMove,
+			Error:     rec.Error,
+			ParentID:  rec.ParentID,
+			Relation:  rec.Relation,
 		}
 		if !rec.StartedAt.IsZero() {
 			it.StartedAt = rec.StartedAt.Format(time.RFC3339)

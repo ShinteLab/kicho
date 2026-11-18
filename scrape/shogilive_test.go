@@ -181,7 +181,8 @@ func TestShogiLiveFetchGameFinished(t *testing.T) {
 	}
 }
 
-// 対局中は棋譜が伸びるので、取り直せばそのぶん反映されること(キャッシュしない)。
+// 対局中は棋譜が伸びるので、取り直せばそのぶん反映されること。
+// 構造体を直接作っているので MinInterval は 0(毎回取りに行く)。間隔は recent_test.go。
 func TestShogiLiveFetchGameIsNotCached(t *testing.T) {
 	sl, _, hits := newLiveServer(t, liveKIF)
 	ctx := context.Background()

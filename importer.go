@@ -154,6 +154,7 @@ func (l *Library) importDocument(ctx context.Context, text, source, sourceURL, e
 	if err != nil {
 		return store.Record{}, err
 	}
+	moves, errorMove, errText := inspectBody(text)
 
 	return l.store.Save(ctx, store.Game{
 		Source: source,
@@ -167,7 +168,9 @@ func (l *Library) importDocument(ctx context.Context, text, source, sourceURL, e
 		White:     doc.White,
 		StartedAt: doc.StartedAt,
 		EndMark:   doc.EndMark(),
-		Moves:     len(doc.Moves),
+		Moves:     moves,
+		ErrorMove: errorMove,
+		Error:     errText,
 
 		Body:     text, // 原本そのまま（CSA なら CSA のまま）
 		Format:   string(kf),

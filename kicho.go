@@ -30,7 +30,9 @@ type Library struct {
 }
 
 // Open は棋譜 DB を開いて Library を作る。dbPath が空なら既定の保存先を使う。
-func Open(dbPath string, logger *slog.Logger) (*Library, error) {
+//
+// opts は取得の設定（`WithMinFetchInterval` など）。HTTP のライブ経路も同じ設定で取りに行く。
+func Open(dbPath string, logger *slog.Logger, opts ...Option) (*Library, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -45,7 +47,7 @@ func Open(dbPath string, logger *slog.Logger) (*Library, error) {
 	if err != nil {
 		return nil, err
 	}
-	f := NewFetcher()
+	f := NewFetcher(opts...)
 	return &Library{
 		Fetcher: f,
 		store:   st,
@@ -213,10 +215,10 @@ func (l *Library) Save(ctx context.Context, f Fetched) (store.Record, error) {
 		encoding = EncodingUTF8
 	}
 
-	// 手数は本文から数え直す。**画面が持っている値を信じない**
-	// （Fetched は UI を往復してくる。手数は本文から決まる派生値であって
+	// 手数とエラーの印は本文から決め直す。**画面が持っている値を信じない**
+	// （Fetched は UI を往復してくる。どちらも本文から決まる派生値であって
 	// 「原本をそのまま保存する」対象ではない）。
-	moves := countMoves(f.KIF)
+	moves, errorMove, errText := inspectBody(f.KIF)
 
 	rec, err := l.store.Save(ctx, store.Game{
 		Source:    source,
@@ -230,6 +232,8 @@ func (l *Library) Save(ctx context.Context, f Fetched) (store.Record, error) {
 		StartedAt: f.StartedAt,
 		EndMark:   f.EndMark,
 		Moves:     moves,
+		ErrorMove: errorMove,
+		Error:     errText,
 
 		Body:     f.KIF,
 		Format:   kifFormat,
@@ -251,6 +255,69 @@ func (l *Library) Save(ctx context.Context, f Fetched) (store.Record, error) {
 		}
 	}
 	return rec, nil
+}
+
+// SaveDerived は保存済みの棋譜（親）から作った棋譜を、親に繋いだ子として保存する。
+//
+// 主な使い道は**エラーのある棋譜を訂正したもの**（relation = store.RelationCorrection）。
+// ⚠️ **kicho は訂正しない。** 訂正した結果（text）を受け取り、親と繋いで残すだけ。
+//
+//   - **毎回新しい棋譜になる**（取得元は store.SourceDerived、取り直せない・追跡できない）
+//   - 親を取り直して保存し直しても子は上書きされず、繋がりも残る。親の本文が変わったことは
+//     子の `Record.ParentChanged` で分かる（直し直すかは使う側が決める）
+//   - text は貼り付けと同じく KIF / CSA（`parseImportable` が受けるもの）。**原本のまま**保存する
+//   - 対局名などのメタデータは text から取り、**空の欄は親の値で埋める**
+//     （訂正した棋譜の手だけを書いた KIF でも、一覧で親と同じ対局として見分けられるように）
+//   - 手数とエラーの印は本文から計算する（訂正しきれていなければ子にもエラーの印が付く）
+//
+// 親が無ければ store.ErrNotFound。relation が空ならエラー。
+func (l *Library) SaveDerived(ctx context.Context, parentID, relation, text string) (store.Record, error) {
+	relation = strings.TrimSpace(relation)
+	if relation == "" {
+		return store.Record{}, fmt.Errorf("%w: 親との関係が空です", ErrNoInput)
+	}
+	doc, kf, err := parseImportable(text)
+	if err != nil {
+		return store.Record{}, err
+	}
+	parent, err := l.store.Get(ctx, parentID)
+	if err != nil {
+		return store.Record{}, err
+	}
+	moves, errorMove, errText := inspectBody(text)
+
+	or := func(v, fallback string) string {
+		if strings.TrimSpace(v) == "" {
+			return fallback
+		}
+		return v
+	}
+	started := doc.StartedAt
+	if started.IsZero() {
+		started = parent.StartedAt
+	}
+	return l.store.SaveDerived(ctx, parent.ID, relation, store.Game{
+		Event:     or(doc.Event, parent.Event),
+		Handicap:  or(doc.Handicap, parent.Handicap),
+		Place:     or(doc.Place, parent.Place),
+		Black:     or(doc.Black, parent.Black),
+		White:     or(doc.White, parent.White),
+		StartedAt: started,
+		EndMark:   doc.EndMark(),
+		Moves:     moves,
+		ErrorMove: errorMove,
+		Error:     errText,
+
+		Body:     text, // 原本そのまま
+		Format:   string(kf),
+		Encoding: EncodingUTF8,
+	})
+}
+
+// Children は id の棋譜を親に持つ棋譜（訂正など）を新しい順に返す（本文なし）。
+// 子が無ければ空。親は `Record.ParentID` で引く（`Get`）。
+func (l *Library) Children(ctx context.Context, id string) ([]store.Record, error) {
+	return l.store.Children(ctx, id)
 }
 
 // resolveSource は取得元と諸元(source_url)を決め直す。
@@ -280,6 +347,10 @@ func (l *Library) resolveSource(source, sourceID, sourceURL string) (string, str
 	case store.SourcePaste:
 		// 貼り付けは取得元が無いので空のまま。
 		return source, sourceURL, nil
+	case store.SourceDerived:
+		// ⚠️ **派生棋譜は SaveDerived だけが保存する。** ここ（Save / Watch）を通すと
+		// 親の無い子ができる（取り直しもできないので追跡もしない）。
+		return "", "", fmt.Errorf("%w: %s は SaveDerived で保存してください", ErrUnsupportedSource, source)
 	default:
 		return "", "", fmt.Errorf("%w: %s", ErrUnsupportedSource, source)
 	}
