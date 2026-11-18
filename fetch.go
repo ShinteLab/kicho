@@ -249,7 +249,7 @@ func (f *Fetcher) resolveRyuohInput(ctx context.Context, in string) (string, err
 	return f.yomiuri.FetchKifuID(ctx, in)
 }
 
-// parseImportable は取り込む前の棋譜（KIF / CSA）を解析し、形式も返す。
+// parseImportable は取り込む前の棋譜（KIF / CSA / KI2）を解析し、形式も返す。
 //
 // **「指し手が 0 手」はエラーにしない**（対局前の中継棋譜は正当に存在する）。
 // 棋譜かどうかはヘッダも指し手も取れなかったかどうかで判断する。
@@ -260,6 +260,10 @@ func (f *Fetcher) resolveRyuohInput(ctx context.Context, in string) (string, err
 // ⚠️ **CSA の指し手が途中で読めなくても断らない**（`kifu.ErrCSAMoves`）。KIF の
 // `Parse` も指し手の中身までは確かめないのと揃える。本文は原本のまま残るので何も失わない
 // （手数などの一覧の値が読めたところまでになるだけ）。
+//
+// **KI2 も受ける**（2026-11-18）。本文は KI2 のまま（形式 `ki2`）。返す Document は
+// 一覧に出すメタデータ用で、⚠️ **手数は `countMoves` で本文から数えること**（Document には
+// 盤に当てられたところまでしか入らない）。
 func parseImportable(text string) (kifu.Document, format.Format, error) {
 	if strings.TrimSpace(text) == "" {
 		return kifu.Document{}, "", ErrEmptyKifu
@@ -268,15 +272,39 @@ func parseImportable(text string) (kifu.Document, format.Format, error) {
 	if err != nil {
 		return kifu.Document{}, "", err
 	}
-	if doc.Empty() && doc.Start == "" {
+	empty := doc.Empty() && doc.Start == ""
+	if f == format.KI2 {
+		// 盤に当てられない手があると Document は空になりうるので、KI2 そのもので見る。
+		k, _ := kifu.ParseKI2(text)
+		empty = k.Empty() && k.Start == ""
+	}
+	if empty {
 		return kifu.Document{}, "", ErrNotKifu
 	}
 	return doc, f, nil
 }
 
-// parseKifu は本文を形式を見分けて読む（CSA なら CSA、それ以外は KIF）。
+// parseKifu は本文を形式を見分けて読む（CSA なら CSA、KI2 なら KI2、それ以外は KIF）。
+//
+// KI2 は盤に当てて KIF の Document にする（メタデータ用）。⚠️ 盤に当てられない手があっても
+// 断らず、**原本に書かれた終局はそのまま EndMark() で見えるように**終局の手を足す
+// （サイトが「投了」と書いているのに、誤記 1 つで対局中に見えると一覧が嘘になる）。
 func parseKifu(text string) (kifu.Document, format.Format, error) {
-	if bodyFormat(text) == format.CSA {
+	switch bodyFormat(text) {
+	case format.KI2:
+		k, err := kifu.ParseKI2(text)
+		if err != nil {
+			return kifu.Document{}, format.KI2, err
+		}
+		doc, _, err := k.KIF()
+		if err != nil && !errors.Is(err, kifu.ErrKI2Move) {
+			return kifu.Document{}, format.KI2, err
+		}
+		if err != nil && k.End != "" {
+			doc.Moves = append(doc.Moves, kifu.Move{Num: len(doc.Moves) + 1, Name: k.End})
+		}
+		return doc, format.KI2, nil
+	case format.CSA:
 		doc, err := kifu.ParseCSA(text)
 		if err != nil && !errors.Is(err, kifu.ErrCSAMoves) {
 			return kifu.Document{}, format.CSA, err

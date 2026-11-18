@@ -127,8 +127,9 @@ func (f *Fetcher) fromShogiDB2(g *scrape.ShogiDB2Game) Fetched {
 
 // fromFuwalete はふわりと将棋の棋譜を Fetched にする。
 //
-// 記事に手で書かれた指し手（移動元の無い KI2）から**kicho が組み立てた KIF が原本**。
-// 誤記で途中から読めないときは、そこまでの手と理由（KIF の先頭のコメント）が入る。
+// **原本は記事に手で書かれた指し手を写した KI2**（形式 `ki2`。移動元を割り出す前のもので
+// 推測が入らない）。⚠️ **誤記があっても全部の手が入る。** 盤に当てられない手は
+// ErrorMove / Error（`withBodyMarks`）で分かり、手数・終局はサイトに書かれたまま。
 func (f *Fetcher) fromFuwalete(g *scrape.FuwaleteGame) Fetched {
 	return Fetched{
 		Source:   store.SourceFuwalete,
@@ -143,8 +144,8 @@ func (f *Fetcher) fromFuwalete(g *scrape.FuwaleteGame) Fetched {
 		EndMark:   g.EndMark,
 		Moves:     len(g.Moves),
 
-		KIF:      g.KIF(),
-		Format:   string(format.KIF),
+		KIF:      g.KI2(),
+		Format:   string(format.KI2),
 		Encoding: EncodingUTF8,
 	}.withBodyMarks()
 }
@@ -170,7 +171,8 @@ func fromDocument(doc kifu.Document, f format.Format, source, sourceURL, body, e
 		White:     doc.White,
 		StartedAt: doc.StartedAt,
 		EndMark:   doc.EndMark(),
-		Moves:     len(doc.Moves),
+		// 手数は本文から数える（KI2 は doc に盤に当てられたところまでしか入らないため）。
+		Moves: countMoves(body),
 
 		KIF:      body,
 		Format:   string(f),
@@ -178,13 +180,16 @@ func fromDocument(doc kifu.Document, f format.Format, source, sourceURL, body, e
 	}.withBodyMarks()
 }
 
-// bodyFormat は本文の形式を見分ける（CSA でなければ KIF）。
+// bodyFormat は本文の形式を見分ける（CSA → KI2 → それ以外は KIF）。
 //
 // ⚠️ **見分けは `core/kifu` に寄せる**（`parseKifu` と同じ判定）。受ける形式を増やしたら
 // ここと `parseKifu` に足すこと。
 func bodyFormat(body string) format.Format {
 	if kifu.IsCSA(body) {
 		return format.CSA
+	}
+	if kifu.IsKI2(body) {
+		return format.KI2
 	}
 	return format.KIF
 }
@@ -213,10 +218,22 @@ func countMoves(body string) int {
 //
 //	KIF … 見つけない（`kifu.Parse` は移動元の座標をそのまま信じ、盤を見ない）
 //	CSA … 指し手が途中で読めない（`kifu.ErrCSAMoves`）。手数は読めたところまで
+//	KI2 … 盤に当てられない手（`kifu.KI2Document.KIF`。移動元を割り出すので必ず見つかる）。
+//	      ⚠️ **手数は原本に書かれた手の数**（盤に当てられたところまでではない）
 //
-// ⚠️ **形式を増やしたらここに足すこと**（KI2 は盤に当てるので必ず見つかる）。
+// ⚠️ **形式を増やしたらここに足すこと**。
 func inspectBody(body string) (moves, errorMove int, errText string) {
 	switch bodyFormat(body) {
+	case format.KI2:
+		k, err := kifu.ParseKI2(body)
+		if err != nil {
+			return 0, 0, ""
+		}
+		_, errMove, err := k.KIF()
+		if err != nil {
+			return len(k.Moves), errMove, err.Error()
+		}
+		return len(k.Moves), 0, ""
 	case format.CSA:
 		doc, err := kifu.ParseCSA(body)
 		if errors.Is(err, kifu.ErrCSAMoves) {

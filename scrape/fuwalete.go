@@ -14,6 +14,8 @@ import (
 	"golang.org/x/net/html"
 
 	"github.com/ShinteLab/core/kifu"
+
+	"github.com/ShinteLab/kicho/format"
 )
 
 // Fuwalete は「ふわりと将棋」(fuwalete.com)の棋譜速報を扱う。
@@ -24,13 +26,14 @@ import (
 //	97手　92%　▲55金 0:37
 //	87手　89%　▲53銀引成 0:46
 //
-// そのため盤を開始局面から進めながら、どの駒が来たのかを割り出して
-// （`kifu.DecodeKI2`）**kicho が KIF を組み立てる**。これが原本になる（読売・将棋DB2 と同じ）。
+// **原本はその指し手をそのまま写した KI2**(`FuwaleteGame.KI2()`)。KIF が要るとき
+// (HTTP のライブ経路・`/kifu/{id}.kif`)は、盤を開始局面から進めながらどの駒が来たのかを
+// 割り出して(`kifu.DecodeKI2`)変換する。
 //
-// ⚠️ **手入力なので誤記がある**（実例: 伊藤–永瀬戦の 74 手目「△89飛」は △29飛打 の誤り。
-// `_docs/sources/fuwalete.md`）。**推測で直さない**。盤に当てられない手が出たら
-// その前の手までを返し、どこで止まったかを棋譜の先頭のコメントに書く
-// （サイトが直せば取り直しで最新化される）。
+// ⚠️ **手入力なので誤記がある**(実例: 伊藤–永瀬戦の 74 手目「△89飛」は △29飛打 の誤り。
+// `_docs/sources/fuwalete.md`)。**推測で直さないこと。原本の手も切らないこと。**
+// 盤に当てられない手は**エラーの印**として扱う(どの手で止まるかは使う側が本文から計算する)。
+// 訂正は kicho の外の仕事で、訂正した棋譜は親子(派生棋譜)として別に残る。
 //
 // HTML のページ(700KB 超)ではなく WordPress の REST API(`/wp-json/wp/v2/posts?slug=`)で
 // 本文だけを取る(20KB 程度)。
@@ -100,6 +103,10 @@ func FuwaleteSlug(raw string) (string, error) {
 }
 
 // FuwaleteGame は「ふわりと将棋」から取得した 1 局分。
+//
+// **原本はサイトに書かれた指し手をそのまま写した KI2**(`KI2()`)。移動元を割り出す前の
+// ものなので推測が入らない。⚠️ **誤記があっても全部の手を残す**(途中で切らない)。
+// 盤に当てられるかどうかは別の話で、使う側がエラーの印として見る(`kicho.inspectBody`)。
 type FuwaleteGame struct {
 	SourceID  string // 記事の slug("ito-365549")
 	Event     string // 記事の題から("王将戦 挑決L")
@@ -107,44 +114,47 @@ type FuwaleteGame struct {
 	White     string
 	StartedAt time.Time
 	TimeLimit time.Duration
-	// EndMark は終局の種別(例 "投了")。対局中・途中で読めなくなったときは空。
+	// EndMark はサイトに書かれた終局(例 "投了")。対局中は空。
+	// **サイトの言い分**であって、指し手が盤に当てられるかとは関係ない。
 	EndMark string
-	// Moves は終局の手(EndMark)を含む。
-	Moves []kifu.Move
-	// Note は途中で読めなくなったときの説明(KIF の先頭のコメントになる)。読めたら空。
-	Note string
+	// Moves はサイトの指し手(1 手目から最後の手まで)。欠けた手は "▲？" の置き場。
+	Moves []kifu.KI2Move
 }
 
 // Finished は終局しているかどうかを返す。
 func (g FuwaleteGame) Finished() bool { return g.EndMark != "" }
 
-// Document は core/kifu の Document に変換する。
+// KI2Document は原本の KI2 にする。
 //
-// 消費時間は書き方が揃っていない(残り時間だけ・"18/0:52"・"2" など)ので
-// **ShowTime は立てない**。
-func (g FuwaleteGame) Document() kifu.Document {
-	return kifu.Document{
-		Handicap:  kifu.HirateHandicap,
-		Event:     g.Event,
-		StartedAt: g.StartedAt,
-		Black:     g.Black,
-		White:     g.White,
-		TimeLimit: g.TimeLimit,
-		Comment:   g.Note,
-		Moves:     g.Moves,
+// 消費時間は書き方が揃っていない(残り時間だけ・"18/0:52"・"2" など)ので書かない。
+func (g FuwaleteGame) KI2Document() kifu.KI2Document {
+	return kifu.KI2Document{
+		Document: kifu.Document{
+			Handicap:  kifu.HirateHandicap,
+			Event:     g.Event,
+			StartedAt: g.StartedAt,
+			Black:     g.Black,
+			White:     g.White,
+			TimeLimit: g.TimeLimit,
+		},
+		Moves: g.Moves,
+		End:   g.EndMark,
 	}
 }
 
-// KIF は KIF テキストに変換する。
-func (g FuwaleteGame) KIF() string { return g.Document().String() }
+// KI2 は原本(KI2 テキスト)を返す。
+func (g FuwaleteGame) KI2() string { return g.KI2Document().String() }
 
-// FetchKifu は slug から KIF 本文だけを返す(HTTP のライブ経路用)。
+// FetchKifu は slug から KIF 本文を返す(HTTP のライブ経路用。⚠️ **ここは KIF で配る**)。
+//
+// 原本(KI2)を `format.KI2ToKIF` で変換する。盤に当てられない手があれば、そこまでの KIF と
+// 止まった理由のコメントになる(保存済みの `/kifu/{id}.kif` と同じ文面)。
 func (s *Fuwalete) FetchKifu(ctx context.Context, slug string) (string, error) {
 	g, err := s.FetchGame(ctx, slug)
 	if err != nil {
 		return "", err
 	}
-	return g.KIF(), nil
+	return format.KI2ToKIF(g.KI2())
 }
 
 // wpPost は REST API の記事(使うものだけ)。
@@ -378,42 +388,25 @@ func parseFuwalete(post *wpPost, live string) (*FuwaleteGame, error) {
 		TimeLimit: t.limit,
 	}
 
-	// 1 手目から続いているところまでを読む。
-	var names []string
-	for n := 1; ; n++ {
-		m, ok := t.moves[n]
+	// 1 手目から最後の手までを全部写す(誤記があっても切らない)。欠けた手数には置き場を入れる。
+	last := 0
+	for n := range t.moves {
+		last = max(last, n)
+	}
+	for n := 1; n <= last; n++ {
+		comment := strings.Join(t.comments[n], "\n")
+		text, ok := t.moves[n]
 		if !ok {
-			break
+			mark := "▲"
+			if n%2 == 0 {
+				mark = "△"
+			}
+			text = mark + "？"
+			comment = fmt.Sprintf("ふわりと将棋に %d 手目がありません", n)
 		}
-		names = append(names, m)
+		g.Moves = append(g.Moves, kifu.KI2Move{Text: kifu.NormalizeKI2Move(text), Comment: comment})
 	}
-	gapAt := 0
-	if len(names) < len(t.moves) {
-		gapAt = len(names) + 1
-	}
-
-	start, err := kifu.StartSFEN(kifu.HirateHandicap)
-	if err != nil {
-		return nil, err
-	}
-	texts, _, derr := kifu.DecodeKI2(start, names)
-	for i, mt := range texts {
-		g.Moves = append(g.Moves, kifu.Move{
-			Num: i + 1, Name: mt.Name, FromX: mt.FromX, FromY: mt.FromY,
-			Comment: strings.Join(t.comments[i+1], "\n"),
-		})
-	}
-	switch {
-	case derr != nil:
-		bad := len(texts) + 1
-		g.Note = fmt.Sprintf("ふわりと将棋の %d 手目「%s」を盤に当てられないため、%d 手目までです（サイトの誤記の可能性があります）",
-			bad, names[bad-1], bad-1)
-	case gapAt != 0:
-		g.Note = fmt.Sprintf("ふわりと将棋に %d 手目が見つからないため、%d 手目までです", gapAt, gapAt-1)
-	case t.end != "":
-		g.EndMark = t.end
-		g.Moves = append(g.Moves, kifu.Move{Num: len(g.Moves) + 1, Name: t.end})
-	}
+	g.EndMark = t.end
 	return g, nil
 }
 
