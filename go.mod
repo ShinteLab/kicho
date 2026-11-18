@@ -3,7 +3,7 @@ module github.com/ShinteLab/kicho
 go 1.26.1
 
 require (
-	github.com/ShinteLab/core v0.3.0
+	github.com/ShinteLab/core v0.4.0
 	github.com/dop251/goja v0.0.0-20260723142020-b4aef50fa347
 	github.com/google/uuid v1.6.0
 	golang.org/x/net v0.57.0
