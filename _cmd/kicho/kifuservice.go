@@ -63,6 +63,19 @@ type GameSummary struct {
 	// Finished は終局済みかどうか。UI で手数の横に「(終局)」を出すのに使う。
 	Finished bool `json:"finished"`
 	Moves    int  `json:"moves"`
+
+	// ErrorMove は盤に当てられない最初の手(0 = エラー無し)、Error はその理由。
+	// ⚠️ **ライブラリが本文から決めた値をそのまま出す。** アプリでは判定しない。
+	ErrorMove int    `json:"errorMove"`
+	Error     string `json:"error"`
+
+	// 派生棋譜(訂正など)の親子。保存済みの棋譜(toSummary)だけが持つ。
+	// ParentID / Relation は子の側、Children は親の側。
+	ParentID      string `json:"parentId"`
+	Relation      string `json:"relation"`
+	ParentChanged bool   `json:"parentChanged"`
+	ParentMissing bool   `json:"parentMissing"`
+	Children      int    `json:"children"`
 }
 
 // GameDetail は棋譜1件の詳細(KIF 本文つき)。
@@ -89,6 +102,14 @@ func toSummary(r store.Record) GameSummary {
 		EndMark:   r.EndMark,
 		Finished:  r.Finished(),
 		Moves:     r.Moves,
+
+		ErrorMove:     r.ErrorMove,
+		Error:         r.Error,
+		ParentID:      r.ParentID,
+		Relation:      r.Relation,
+		ParentChanged: r.ParentChanged,
+		ParentMissing: r.ParentMissing,
+		Children:      r.Children,
 	}
 	if !r.StartedAt.IsZero() {
 		s.StartedAt = r.StartedAt.Format(time.RFC3339)
@@ -111,6 +132,8 @@ func fetchedToDetail(f kicho.Fetched) GameDetail {
 			EndMark:   f.EndMark,
 			Finished:  f.Finished(),
 			Moves:     f.Moves,
+			ErrorMove: f.ErrorMove,
+			Error:     f.Error,
 		},
 		KIF:      f.KIF,
 		Encoding: f.Encoding,
