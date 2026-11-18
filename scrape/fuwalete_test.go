@@ -20,6 +20,9 @@ import (
 //	fuwalete_post_finished.json … 伊藤–永瀬戦(王将戦 挑決L。投了まで。74 手目に誤記がある)
 //	fuwalete_post_live.json     … 豊島–広瀬戦(順位戦 A級。対局中。記事に 37 手)
 //	fuwalete_live_page.json     … 対局中の記事が読み込む枠(/q22b/)。見出しだけで手はまだ無い
+//	fuwalete_post_rematch.json  … 豊島–広瀬戦の終局後(2026-11-19 に取得)。87 手で千日手、
+//	                              指し直し局が 114 手で投了。1 つの記事に 2 局が並ぶ。
+//	                              指し直し局の 87 手目が「▲65角26歩」(付記の前の空白が抜けている)
 
 // fuwaleteServer は REST API の posts / pages を返すテスト用サーバを立てる。
 // pages は slug → 応答(JSON の配列)。
@@ -259,6 +262,58 @@ func TestFuwaleteLiveGame(t *testing.T) {
 			t.Fatalf("手数 = %d, want 37", len(g.Moves))
 		}
 	})
+}
+
+// 指し直しのある記事は、区切りより上の指し直し局だけを読む(先後も指し直し局のもの)。
+func TestFuwaleteRematch(t *testing.T) {
+	s := fuwaleteServer(t, map[string]string{"toyo-367599": readTestdata(t, "fuwalete_post_rematch.json")}, nil)
+	g, err := s.FetchGame(context.Background(), "toyo-367599")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.Moves) != 114 || g.EndMark != "投了" {
+		t.Fatalf("手数 = %d, EndMark = %q, want 114 / 投了", len(g.Moves), g.EndMark)
+	}
+	// 千日手局は先手が豊島、指し直し局は先手が広瀬。
+	if g.Black != "広瀬章人" || g.White != "豊島将之" {
+		t.Errorf("先手 = %q, 後手 = %q", g.Black, g.White)
+	}
+	if g.TimeLimit != 6*time.Hour {
+		t.Errorf("TimeLimit = %v", g.TimeLimit)
+	}
+	// 指し直し局であることは棋戦名に付ける(KI2 の「棋戦：」にも出る)。
+	if g.Event != "順位戦 A級（指し直し）" {
+		t.Errorf("Event = %q", g.Event)
+	}
+	if !strings.Contains(g.KI2(), "棋戦：順位戦 A級（指し直し）") {
+		t.Errorf("KI2 の棋戦に指し直しが無い:\n%s", g.KI2()[:200])
+	}
+	// 「▲65角26歩」の 26歩 は空白の抜けた付記。
+	if got := g.Moves[86].Text; got != "▲６五角" {
+		t.Errorf("87 手目 = %q, want ▲６五角", got)
+	}
+	kif := toKIF(t, g)
+	if strings.Contains(kif, "盤に当てられない") || !strings.Contains(kif, "115 投了") {
+		t.Errorf("投了まで読めていない:\n%s", kif)
+	}
+}
+
+func TestFuwaleteMoveText(t *testing.T) {
+	for in, want := range map[string]string{
+		"▲55金 0:37":       "▲55金",
+		"▲66角 ai36角 0:24": "▲66角",
+		"▲同玉 9/1:10":      "▲同玉",
+		"▲同 玉":            "▲同玉",
+		"▲53銀引成":          "▲53銀引成",
+		"▲65角26歩 0:31":    "▲65角",
+		"▲65角ai26歩":       "▲65角",
+		"▲同歩0:12":         "▲同歩",
+		"△37歩成2":          "△37歩成",
+	} {
+		if got := fuwaleteMoveText(in); got != want {
+			t.Errorf("fuwaleteMoveText(%q) = %q, want %q", in, got, want)
+		}
+	}
 }
 
 func TestFuwaleteNotFound(t *testing.T) {
