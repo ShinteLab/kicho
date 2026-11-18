@@ -254,7 +254,9 @@ func fuwaleteLiveSlug(content string) (string, bool) {
 
 var (
 	// fuwaleteMoveLine は指し手の行。評価値は空のこともある("12手　%　")。
-	fuwaleteMoveLine = regexp.MustCompile(`^(\d+)手[\s　]+(?:\d*%[\s　]+)?([▲△☗☖].*)$`)
+	// 詰みが見つかると評価値の欄が「詰みまでの手数」になる("102手　▲勝23手　△同銀")。
+	// ⚠️ 欄も手番記号で始まるので、評価値として先に食べないと指し手に読まれる。
+	fuwaleteMoveLine = regexp.MustCompile(`^(\d+)手[\s　]+(?:(?:\d*%|[▲△☗☖]勝[0-9０-９]+手)[\s　]+)?([▲△☗☖].*)$`)
 	// fuwaleteEndLine は終局の行("△投了　18時8分")。
 	fuwaleteEndLine = regexp.MustCompile(`^[▲△☗☖]([^\s　]+)`)
 	fuwaleteBlack   = regexp.MustCompile(`先手[▲☗]([^\s　]+)`)
